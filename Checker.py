@@ -142,8 +142,8 @@ class RobloxCookieChecker:
         
         # Улучшенный паттерн для поиска куки
         patterns = [
-            r'_\|WARNING:-DO-NOT-SHARE-THIS\.--[^\\s]+.*?(?=\\s|$)',
-            r'_\|WARNING:-DO-NOT-SHARE-THIS[^\\s]+',
+            r'_\\|WARNING:-DO-NOT-SHARE-THIS\\.--[^\\s]+.*?(?=\\s|$)',
+            r'_\\|WARNING:-DO-NOT-SHARE-THIS[^\\s]+',
             r'ROBLOSECURITY=[^\\s]+',
         ]
         
@@ -429,9 +429,16 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=checker.get_command_keyboard()
         )
 
-async def show_fresher_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_fresher_info(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int = None):
     """Информация о фрешере"""
-    user_id = update.effective_user.id
+    if not user_id:
+        if hasattr(update, 'effective_user'):
+            user_id = update.effective_user.id
+        elif hasattr(update, 'from_user'):
+            user_id = update.from_user.id
+        else:
+            user_id = update.message.from_user.id
+    
     has_premium = checker.check_premium_access(user_id)
     
     if has_premium:
@@ -651,7 +658,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id
+    user_id = query.from_user.id  # Исправлено: query.from_user.id вместо query.effective_user.id
     
     if query.data == "main_menu":
         await show_main_menu(query, context)
@@ -668,7 +675,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif query.data == "fresher_info":
-        await show_fresher_info(query, context)
+        await show_fresher_info(query, context, user_id)  # Передаем user_id явно
     
     elif query.data == "buy_fresher":
         await create_payment_invoice(query, context, user_id)
@@ -790,32 +797,4 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • ФРЕШЕР КУКИ - обновляет валидные куки
 • Выкидывает ВСЕХ других пользователей с аккаунта
 • Оставляет доступ ТОЛЬКО у вас
-• Возвращает 100% валидную фрешнутую куки
-
-Как использовать:
-1. Отправьте куки текстом или файлом
-2. Получите результаты проверки
-3. При необходимости обновите куки через фрешер
-
-Поддержка: {ADMIN_USERNAME}
-        """
-        await query.edit_message_text(
-            help_text,
-            reply_markup=checker.get_command_keyboard()
-        )
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    
-    print("🤖 Бот проверки Roblox куки запущен...")
-    print("✅ Чекер - бесплатно")
-    print("✅ Фрешер - 1 USDT (выкидывает всех других пользователей)")
-    print("✅ Бот готов к работе!")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+• Воз
