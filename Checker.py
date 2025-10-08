@@ -8,7 +8,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import requests
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Конфигурация
 BOT_TOKEN = "8204086100:AAFmfYGPLqtBpSpJk1FgyCwU87l6K2ZieTo"
@@ -30,6 +30,7 @@ class RobloxCookieChecker:
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0'
         ]
         self.user_cookies = {}  # Хранилище куки по пользователям
+        self.subscriptions = {}  # Хранилище подписок
         
     def get_random_user_agent(self):
         """Возвращает случайный User-Agent"""
@@ -87,6 +88,42 @@ class RobloxCookieChecker:
         """Очистка куки"""
         return cookie_data.strip()
 
+    def refresh_cookie_with_auth_key(self, cookie_data, auth_key):
+        """Обновление куки через auth key"""
+        try:
+            # Форматируем куки для использования в запросе
+            if not cookie_data.startswith('.ROBLOSECURITY='):
+                cookie_string = f'.ROBLOSECURITY={cookie_data}'
+            else:
+                cookie_string = cookie_data
+            
+            headers = {
+                'User-Agent': self.get_random_user_agent(),
+                'Cookie': cookie_string,
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': auth_key
+            }
+            
+            # Запрос на обновление сессии через Roblox API
+            refresh_url = 'https://auth.roblox.com/v2/logout'
+            response = requests.post(refresh_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200 or response.status_code == 403:
+                # Получаем обновленные куки из заголовков
+                if 'set-cookie' in response.headers:
+                    new_cookies = response.headers['set-cookie']
+                    # Ищем новую куки ROBLOSECURITY
+                    roblosecurity_match = re.search(r'\.ROBLOSECURITY=([^;]+)', new_cookies)
+                    if roblosecurity_match:
+                        new_cookie = roblosecurity_match.group(1)
+                        return True, new_cookie, "✅ Куки успешно обновлена"
+            
+            return False, cookie_data, "❌ Не удалось обновить куки"
+            
+        except Exception as e:
+            print(f"❌ Ошибка обновления куки: {e}")
+            return False, cookie_data, f"❌ Ошибка: {str(e)}"
+
     def simple_cookie_validation(self, cookie_data):
         """Проверка валидности куки"""
         self.checked_count += 1
@@ -124,7 +161,7 @@ class RobloxCookieChecker:
                     username = user_data.get('name', 'Unknown')
                     user_id = user_data['id']
                     self.valid_count += 1
-                    return True, cookie_clean, f"✅ VALID - User: {username} (ID: {user_id})", username
+                    return True, cookie_clean, f"✅ VALID - User: {username} (ID: {user_id})", username, user_id
                 
             # Пробуем mobile API с другим User-Agent
             mobile_headers = headers.copy()
@@ -138,7 +175,7 @@ class RobloxCookieChecker:
                     username = mobile_data.get('UserName', 'Unknown')
                     user_id = mobile_data['UserID']
                     self.valid_count += 1
-                    return True, cookie_clean, f"✅ VALID - User: {username} (ID: {user_id})", username
+                    return True, cookie_clean, f"✅ VALID - User: {username} (ID: {user_id})", username, user_id
             
             # Пробуем домашнюю страницу
             home_response = self.make_robust_request('https://www.roblox.com/home', headers)
@@ -147,13 +184,13 @@ class RobloxCookieChecker:
                 current_url = home_response.url.lower()
                 if 'login' not in current_url and 'signup' not in current_url:
                     self.valid_count += 1
-                    return True, cookie_clean, "✅ VALID - Home page access", "Unknown"
+                    return True, cookie_clean, "✅ VALID - Home page access", "Unknown", "Unknown"
         
         except Exception as e:
             print(f"❌ Ошибка проверки: {e}")
-            return False, cookie_clean, f"❌ ERROR - {str(e)}", "Unknown"
+            return False, cookie_clean, f"❌ ERROR - {str(e)}", "Unknown", "Unknown"
         
-        return False, cookie_clean, "❌ INVALID - All checks failed", "Unknown"
+        return False, cookie_clean, "❌ INVALID - All checks failed", "Unknown", "Unknown"
 
     def process_multiple_cookies(self, text, user_id):
         """Обработка множественных куки с сохранением для распределения"""
@@ -173,17 +210,19 @@ class RobloxCookieChecker:
             'all_cookies': cookies,
             'valid_cookies': [],
             'invalid_cookies': [],
-            'usernames': []
+            'usernames': [],
+            'user_ids': []
         }
         
         for i, cookie in enumerate(cookies, 1):
             print(f"🔍 Проверяю куки {i}/{total}")
-            is_valid, clean_cookie, status, username = self.simple_cookie_validation(cookie)
+            is_valid, clean_cookie, status, username, user_id_val = self.simple_cookie_validation(cookie)
             
             if is_valid:
                 valid_cookies.append(clean_cookie)
                 self.user_cookies[user_id]['valid_cookies'].append(clean_cookie)
                 self.user_cookies[user_id]['usernames'].append(username)
+                self.user_cookies[user_id]['user_ids'].append(user_id_val)
                 results.append(f"✅ {i}/{total}: {status}")
             else:
                 invalid_cookies.append(clean_cookie)
@@ -227,6 +266,56 @@ class RobloxCookieChecker:
         
         return zip_filename
 
+    def subscribe_user(self, user_id, cookie_index, auth_key):
+        """Подписка пользователя на обновление куки"""
+        if user_id not in self.user_cookies:
+            return False, "❌ Куки не найдены"
+        
+        if cookie_index >= len(self.user_cookies[user_id]['valid_cookies']):
+            return False, "❌ Неверный индекс куки"
+        
+        cookie = self.user_cookies[user_id]['valid_cookies'][cookie_index]
+        username = self.user_cookies[user_id]['usernames'][cookie_index]
+        user_id_val = self.user_cookies[user_id]['user_ids'][cookie_index]
+        
+        # Сохраняем подписку
+        self.subscriptions[user_id] = {
+            'cookie': cookie,
+            'username': username,
+            'user_id': user_id_val,
+            'auth_key': auth_key,
+            'subscribe_date': datetime.now(),
+            'last_refresh': datetime.now()
+        }
+        
+        return True, f"✅ Подписка активирована для {username}"
+
+    def refresh_subscribed_cookie(self, user_id):
+        """Обновление куки по подписке"""
+        if user_id not in self.subscriptions:
+            return False, "❌ Подписка не найдена"
+        
+        subscription = self.subscriptions[user_id]
+        cookie = subscription['cookie']
+        auth_key = subscription['auth_key']
+        
+        # Обновляем куки
+        success, new_cookie, message = self.refresh_cookie_with_auth_key(cookie, auth_key)
+        
+        if success:
+            # Обновляем подписку
+            self.subscriptions[user_id]['cookie'] = new_cookie
+            self.subscriptions[user_id]['last_refresh'] = datetime.now()
+            
+            # Проверяем валидность новой куки
+            is_valid, _, status, username, _ = self.simple_cookie_validation(new_cookie)
+            if is_valid:
+                return True, f"✅ Куки успешно обновлена и валидна\n👤 Пользователь: {username}"
+            else:
+                return False, "❌ Куки обновлена, но не прошла валидацию"
+        else:
+            return False, message
+
 checker = RobloxCookieChecker()
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -235,7 +324,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Простая и быстрая проверка валидности куки.\n\n"
         "Команды:\n"
         "/start - запуск\n"
-        "/stats - статистика\n\n"
+        "/stats - статистика\n"
+        "/mysub - моя подписка\n\n"
         "Просто отправьте куки текстом или файлом для проверки."
     )
 
@@ -247,8 +337,37 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Валидных куки: {checker.valid_count}
 • Невалидных: {checker.checked_count - checker.valid_count}
 • Процент валидных: {checker.valid_count/max(1, checker.checked_count)*100:.1f}%
+• Активных подписок: {len(checker.subscriptions)}
 """
     await update.message.reply_text(stats_text)
+
+async def mysub_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id in checker.subscriptions:
+        subscription = checker.subscriptions[user_id]
+        sub_date = subscription['subscribe_date'].strftime("%d.%m.%Y %H:%M")
+        last_refresh = subscription['last_refresh'].strftime("%d.%m.%Y %H:%M")
+        
+        sub_info = f"""
+📋 ИНФОРМАЦИЯ О ПОДПИСКЕ:
+
+👤 Пользователь: {subscription['username']}
+🆔 ID: {subscription['user_id']}
+📅 Дата подписки: {sub_date}
+🔄 Последнее обновление: {last_refresh}
+
+Доступные действия:
+"""
+        keyboard = [
+            [InlineKeyboardButton("🔄 Обновить куки", callback_data="refresh_cookie")],
+            [InlineKeyboardButton("❌ Отменить подписку", callback_data="cancel_subscription")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(sub_info, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("❌ У вас нет активной подписки")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -263,11 +382,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Не удалось найти куки в тексте.")
             return
         
-        # Создаем клавиатуру с кнопкой распределения
+        # Создаем клавиатуру с кнопками
         if valid_cookies:
             keyboard = [
                 [InlineKeyboardButton("📁 Распределить по файлам", callback_data="distribute_files")],
-                [InlineKeyboardButton("📦 Скачать общий файл", callback_data="download_combined")]
+                [InlineKeyboardButton("📦 Скачать общий файл", callback_data="download_combined")],
+                [InlineKeyboardButton("💎 Подписка валидатор", callback_data="subscription_menu")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -302,11 +422,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
             return
         
-        # Создаем клавиатуру с кнопкой распределения
+        # Создаем клавиатуру с кнопками
         if valid_cookies:
             keyboard = [
                 [InlineKeyboardButton("📁 Распределить по файлам", callback_data="distribute_files")],
-                [InlineKeyboardButton("📦 Скачать общий файл", callback_data="download_combined")]
+                [InlineKeyboardButton("📦 Скачать общий файл", callback_data="download_combined")],
+                [InlineKeyboardButton("💎 Подписка валидатор", callback_data="subscription_menu")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -352,6 +473,94 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                           checker.user_cookies[user_id]['valid_cookies'], 
                           checker.user_cookies[user_id]['invalid_cookies'], 
                           "")
+    
+    elif query.data == "subscription_menu":
+        if user_id not in checker.user_cookies or not checker.user_cookies[user_id]['valid_cookies']:
+            await query.edit_message_text("❌ Нет валидных куки для подписки")
+            return
+        
+        valid_cookies = checker.user_cookies[user_id]['valid_cookies']
+        usernames = checker.user_cookies[user_id]['usernames']
+        
+        # Создаем кнопки для выбора куки
+        keyboard = []
+        for i, (cookie, username) in enumerate(zip(valid_cookies, usernames)):
+            keyboard.append([InlineKeyboardButton(f"👤 {username}", callback_data=f"subscribe_{i}")])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "💎 ВЫБЕРИТЕ КУКИ ДЛЯ ПОДПИСКИ:\n\n"
+            "Подписка включает:\n"
+            "• Автоматическую проверку валидности\n"
+            "• Обновление куки через auth key\n"
+            "• Уведомления о статусе\n\n"
+            "Выберите аккаунт:",
+            reply_markup=reply_markup
+        )
+    
+    elif query.data.startswith("subscribe_"):
+        cookie_index = int(query.data.split("_")[1])
+        await query.edit_message_text(
+            f"🔐 Введите auth key для подписки:\n\n"
+            f"Для получения auth key:\n"
+            f"1. Откройте браузер\n"
+            f"2. Перейдите на Roblox.com\n"
+            f"3. Откройте Developer Tools (F12)\n"
+            f"4. Найдите заголовок X-CSRF-TOKEN в запросах\n\n"
+            f"Отправьте auth key текстовым сообщением:"
+        )
+        # Сохраняем индекс выбранной куки в контексте
+        context.user_data['selected_cookie_index'] = cookie_index
+    
+    elif query.data == "refresh_cookie":
+        await query.edit_message_text("🔄 Обновляю куки...")
+        success, message = checker.refresh_subscribed_cookie(user_id)
+        await query.edit_message_text(message)
+    
+    elif query.data == "cancel_subscription":
+        if user_id in checker.subscriptions:
+            username = checker.subscriptions[user_id]['username']
+            del checker.subscriptions[user_id]
+            await query.edit_message_text(f"❌ Подписка для {username} отменена")
+        else:
+            await query.edit_message_text("❌ Подписка не найдена")
+    
+    elif query.data == "back_to_main":
+        await query.edit_message_text("🔙 Возврат в главное меню")
+
+async def handle_auth_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода auth key"""
+    user_id = update.effective_user.id
+    auth_key = update.message.text.strip()
+    
+    if 'selected_cookie_index' not in context.user_data:
+        await update.message.reply_text("❌ Сначала выберите куки для подписки")
+        return
+    
+    cookie_index = context.user_data['selected_cookie_index']
+    
+    # Активируем подписку
+    success, message = checker.subscribe_user(user_id, cookie_index, auth_key)
+    
+    if success:
+        subscription = checker.subscriptions[user_id]
+        sub_info = f"""
+✅ ПОДПИСКА АКТИВИРОВАНА
+
+👤 Пользователь: {subscription['username']}
+🆔 ID: {subscription['user_id']}
+📅 Дата активации: {subscription['subscribe_date'].strftime("%d.%m.%Y %H:%M")}
+
+Теперь вы можете обновлять куки через /mysub
+"""
+        await update.message.reply_text(sub_info)
+    else:
+        await update.message.reply_text(message)
+    
+    # Очищаем контекст
+    context.user_data.pop('selected_cookie_index', None)
 
 async def send_results(update, user_id, valid_cookies, invalid_cookies, process_results):
     """Отправка результатов проверки"""
@@ -414,15 +623,14 @@ def main():
     
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("mysub", mysub_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_auth_key))
     app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
     app.add_handler(CallbackQueryHandler(button_handler))
     
     print("🤖 Бот проверки Roblox куки запущен...")
     print("✅ Бот готов к работе!")
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
