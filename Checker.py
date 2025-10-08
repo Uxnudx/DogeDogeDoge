@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 
 # Конфигурация
-BOT_TOKEN = "8204086100:AAFmfYGPLqtBpSpJk1FgyCwU87l6K2ZieTo"
+BOT_TOKEN = "7585671071:AAHQqLCFqpC-0Xf1IB965_d33-rPbTAhj8A"
 
 logging.basicConfig(level=logging.INFO)
 
