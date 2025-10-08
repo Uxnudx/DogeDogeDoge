@@ -12,125 +12,180 @@ from datetime import datetime, timedelta
 
 # Конфигурация
 BOT_TOKEN = "7585671071:AAHQqLCFqpC-0Xf1IB965_d33-rPbTAhj8A"
+CRYPTOBOT_TOKEN = "470734:AAKKe0DuwX6a5WvXEUnsGGBrRSbyN3YJvxH"  # Замените на реальный токен
 
-# Тарифы
-TARIFFS = {
-    'trial': {
-        'name': '🆓 Пробный',
-        'price_rub': 0,
-        'description': '3 дня доступа • ∞ проверок',
-        'days': 3,
-        'is_trial': True
+# Тарифы (все подписки деактивированы)
+PRICES = {
+    '15rub': {
+        'name': '🔓 Доступ на 1 день',
+        'amount': 15,
+        'description': '1 день доступа к проверке куки'
     },
-    '30days': {
-        'name': '🥈 30 дней', 
-        'price_rub': 50,
-        'description': '30 дней доступа • ∞ проверок',
-        'days': 30,
-        'is_trial': False
-    },
-    'vip': {
-        'name': '🥇 VIP',
-        'price_rub': 100,
-        'description': 'Навсегда • ∞ проверок',
-        'days': 99999,
-        'is_trial': False
+    '100rub': {
+        'name': '🔓 Доступ на 30 дней', 
+        'amount': 100,
+        'description': '30 дней доступа к проверке куки'
     }
 }
 
 logging.basicConfig(level=logging.INFO)
 
+class CryptoBotPayment:
+    def __init__(self, token):
+        self.token = token
+        self.base_url = "https://pay.crypt.bot/api"
+        
+    def create_invoice(self, amount, description="Доступ к проверке куки"):
+        """Создание инвойса в CryptoBot"""
+        headers = {
+            "Crypto-Pay-API-Token": self.token,
+            "Content-Type": "application/json"
+        }
+        
+        # Конвертируем рубли в USDT (примерный курс)
+        usdt_amount = round(amount / 90, 2)  # ~90 руб за USDT
+        
+        payload = {
+            "amount": usdt_amount,
+            "asset": "USDT",
+            "description": description,
+            "paid_btn_name": "viewItem",
+            "paid_btn_url": f"https://t.me/{BOT_TOKEN.split(':')[0]}",
+            "payload": str(uuid.uuid4()),
+            "allow_comments": False,
+            "allow_anonymous": False
+        }
+        
+        try:
+            response = requests.post(
+                f"{self.base_url}/createInvoice", 
+                json=payload, 
+                headers=headers,
+                timeout=10
+            )
+            data = response.json()
+            
+            if data.get('ok'):
+                return {
+                    'success': True,
+                    'invoice_id': data['result']['invoice_id'],
+                    'pay_url': data['result']['pay_url'],
+                    'amount': usdt_amount
+                }
+            else:
+                return {'success': False, 'error': data.get('description')}
+                
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+    
+    def check_invoice(self, invoice_id):
+        """Проверка статуса инвойса"""
+        headers = {
+            "Crypto-Pay-API-Token": self.token
+        }
+        
+        try:
+            response = requests.get(
+                f"{self.base_url}/getInvoices?invoice_ids={invoice_id}", 
+                headers=headers,
+                timeout=10
+            )
+            data = response.json()
+            
+            if data.get('ok') and data.get('result'):
+                invoice = data['result'][0]
+                return {
+                    'status': invoice['status'],
+                    'paid': invoice['status'] == 'paid',
+                    'amount': invoice['amount'],
+                    'created_at': invoice['created_at']
+                }
+            return None
+            
+        except Exception as e:
+            print(f"❌ Ошибка проверки инвойса: {e}")
+            return None
+
 class UserManager:
     def __init__(self):
-        self.users_file = "users.json"
-        self.trials_file = "trials.json"
+        self.users_file = "paid_users.json"
+        self.pending_payments_file = "pending_payments.json"
         self.load_data()
     
     def load_data(self):
-        """Загрузка данных из файлов"""
+        """Загрузка данных"""
         try:
             with open(self.users_file, 'r') as f:
-                self.users = json.load(f)
+                self.paid_users = json.load(f)
         except:
-            self.users = {}
+            self.paid_users = {}
             
         try:
-            with open(self.trials_file, 'r') as f:
-                self.trials = json.load(f)
+            with open(self.pending_payments_file, 'r') as f:
+                self.pending_payments = json.load(f)
         except:
-            self.trials = {}
+            self.pending_payments = {}
     
     def save_data(self):
-        """Сохранение данных в файлы"""
+        """Сохранение данных"""
         with open(self.users_file, 'w') as f:
-            json.dump(self.users, f, indent=2)
-        with open(self.trials_file, 'w') as f:
-            json.dump(self.trials, f, indent=2)
+            json.dump(self.paid_users, f, indent=2)
+        with open(self.pending_payments_file, 'w') as f:
+            json.dump(self.pending_payments, f, indent=2)
     
-    def can_use_trial(self, user_id):
-        """Может ли пользователь использовать пробный период"""
-        return str(user_id) not in self.trials
-    
-    def activate_trial(self, user_id):
-        """Активация пробного периода"""
-        expiry_date = datetime.now() + timedelta(days=3)
-        self.trials[str(user_id)] = {
-            'activated_date': datetime.now().timestamp(),
-            'expiry_date': expiry_date.timestamp()
+    def add_pending_payment(self, user_id, price_key, invoice_id):
+        """Добавление ожидающего платежа"""
+        self.pending_payments[str(user_id)] = {
+            'price_key': price_key,
+            'invoice_id': invoice_id,
+            'created_at': datetime.now().timestamp()
         }
         self.save_data()
+    
+    def get_pending_payment(self, user_id):
+        """Получение ожидающего платежа"""
+        return self.pending_payments.get(str(user_id))
+    
+    def remove_pending_payment(self, user_id):
+        """Удаление ожидающего платежа"""
+        if str(user_id) in self.pending_payments:
+            del self.pending_payments[str(user_id)]
+            self.save_data()
+    
+    def activate_access(self, user_id, price_key):
+        """Активация доступа после оплаты"""
+        price_info = PRICES[price_key]
+        
+        if price_key == '15rub':
+            expiry_days = 1
+        else:  # 100rub
+            expiry_days = 30
+            
+        expiry_date = datetime.now() + timedelta(days=expiry_days)
+        
+        self.paid_users[str(user_id)] = {
+            'price_key': price_key,
+            'activated_date': datetime.now().timestamp(),
+            'expiry_date': expiry_date.timestamp(),
+            'amount': price_info['amount']
+        }
+        self.save_data()
+        
         return expiry_date
     
-    def add_premium_user(self, user_id, tariff_id):
-        """Добавление оплатившего пользователя"""
-        tariff = TARIFFS[tariff_id]
-        expiry_date = datetime.now() + timedelta(days=tariff['days'])
-        
-        self.users[str(user_id)] = {
-            'tariff': tariff_id,
-            'expiry_date': expiry_date.timestamp(),
-            'joined_date': datetime.now().timestamp()
-        }
-        
-        if str(user_id) in self.trials:
-            del self.trials[str(user_id)]
-            
-        self.save_data()
-    
     def is_user_active(self, user_id):
-        """Проверка есть ли у пользователя активная подписка"""
-        user_id_str = str(user_id)
-        
-        if user_id_str in self.users:
-            user_data = self.users[user_id_str]
-            if datetime.now().timestamp() < user_data['expiry_date']:
-                return True
-            else:
-                del self.users[user_id_str]
-                self.save_data()
-                return False
-        
-        if user_id_str in self.trials:
-            trial_data = self.trials[user_id_str]
-            if datetime.now().timestamp() < trial_data['expiry_date']:
-                return True
-            else:
-                del self.trials[user_id_str]
-                self.save_data()
-                return False
-        
-        return False
-    
-    def get_user_tariff(self, user_id):
-        """Получение тарифа пользователя"""
-        user_id_str = str(user_id)
-        
-        if user_id_str in self.users:
-            return self.users[user_id_str]['tariff']
-        elif user_id_str in self.trials:
-            return 'trial'
-        else:
-            return None
+        """Проверка активного доступа"""
+        user_data = self.paid_users.get(str(user_id))
+        if not user_data:
+            return False
+            
+        if datetime.now().timestamp() > user_data['expiry_date']:
+            # Доступ истек
+            del self.paid_users[str(user_id)]
+            self.save_data()
+            return False
+            
+        return True
 
 class RobloxCookieChecker:
     def __init__(self):
@@ -138,9 +193,9 @@ class RobloxCookieChecker:
         self.checked_count = 0
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
         ]
         self.user_manager = UserManager()
+        self.cryptobot = CryptoBotPayment(CRYPTOBOT_TOKEN)
         
     def get_random_user_agent(self):
         return random.choice(self.user_agents)
@@ -160,11 +215,9 @@ class RobloxCookieChecker:
         return None
 
     def extract_cookies_from_text(self, text):
-        """Простое извлечение куки"""
+        """Извлечение куки"""
         cookies = []
-        
-        # Ищем куки по паттерну WARNING
-        pattern = r'_\\|WARNING:-DO-NOT-SHARE-THIS[^👤\\s]*'
+        pattern = r'_\\|WARNING:-DO-NOT-SHARE-THIS[^\\s]*'
         matches = re.findall(pattern, text)
         
         for match in matches:
@@ -174,14 +227,10 @@ class RobloxCookieChecker:
         
         return cookies
 
-    def clean_cookie_string(self, cookie_data):
-        return cookie_data.strip()
-
     def simple_cookie_validation(self, cookie_data):
-        """Простая проверка валидности куки"""
+        """Проверка валидности куки"""
         self.checked_count += 1
-        
-        cookie_clean = self.clean_cookie_string(cookie_data)
+        cookie_clean = cookie_data.strip()
         
         if not cookie_clean.startswith('.ROBLOSECURITY='):
             cookie_string = f'.ROBLOSECURITY={cookie_clean}'
@@ -194,7 +243,6 @@ class RobloxCookieChecker:
         }
         
         try:
-            # Проверка через API
             api_url = 'https://users.roblox.com/v1/users/authenticated'
             response = self.make_robust_request(api_url, headers)
             
@@ -204,7 +252,6 @@ class RobloxCookieChecker:
                     self.valid_count += 1
                     return True, cookie_clean
             
-            # Проверка через домашнюю страницу
             home_response = self.make_robust_request('https://www.roblox.com/home', headers)
             if home_response and home_response.status_code == 200:
                 current_url = home_response.url.lower()
@@ -218,7 +265,7 @@ class RobloxCookieChecker:
         return False, cookie_clean
 
     def process_multiple_cookies(self, text, user_id):
-        """Обработка куки без игровой статистики"""
+        """Обработка куки"""
         cookies = self.extract_cookies_from_text(text)
         
         print(f"🔍 Найдено куки: {len(cookies)}")
@@ -241,12 +288,11 @@ class RobloxCookieChecker:
             
             if is_valid:
                 valid_cookies.append(clean_cookie)
-                results.append(f"✅ {i}/{total}: Валидная куки")
+                results.append(f"✅ {i}/{total}: Валидная")
             else:
                 invalid_cookies.append(clean_cookie)
-                results.append(f"❌ {i}/{total}: Невалидная куки")
+                results.append(f"❌ {i}/{total}: Невалидная")
         
-        # Простой отчет
         report = f"""🔍 **ОТЧЕТ ПРОВЕРКИ**
 
 • Всего проверено: {total}
@@ -259,43 +305,233 @@ class RobloxCookieChecker:
 # Инициализация
 checker = RobloxCookieChecker()
 
-def create_payment_keyboard(tariff_id):
-    """Клавиатура для оплаты"""
-    tariff = TARIFFS[tariff_id]
-    crypto_bot_url = f"https://t.me/CryptoBot?start={BOT_TOKEN}_{tariff_id}"
-    
-    keyboard = [
-        [InlineKeyboardButton("💳 Оплатить через CryptoBot", url=crypto_bot_url)],
-        [InlineKeyboardButton("✅ Я оплатил", callback_data=f"confirm_{tariff_id}")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="show_tariffs")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if checker.user_manager.is_user_active(user_id):
+        user_data = checker.user_manager.paid_users[str(user_id)]
+        expiry_date = datetime.fromtimestamp(user_data['expiry_date'])
+        expiry_str = expiry_date.strftime("%d.%m.%Y")
+        
         await update.message.reply_text(
-            "✅ У вас есть доступ к боту!\n\n"
-            "📁 Отправьте файл с куки для проверки!"
+            f"✅ **Доступ активен до {expiry_str}**\n\n"
+            f"📁 Отправьте файл с куки для проверки!"
         )
     else:
         keyboard = [
-            [InlineKeyboardButton("🆓 Пробный период", callback_data="get_trial")],
-            [InlineKeyboardButton("💎 Выбрать тариф", callback_data="show_tariffs")]
+            [InlineKeyboardButton("💰 Купить доступ", callback_data="show_prices")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
             "🔍 **Roblox Cookie Checker**\n\n"
-            "Для проверки куки необходим доступ\n\n"
-            "🆓 **Пробный:** 3 дня • ∞ проверок\n"
-            "💎 **Тарифы:** 50₽ (30 дней) • 100₽ (VIP)\n\n"
-            "Выберите опцию:",
+            "Для проверки куки необходим оплаченный доступ\n\n"
+            "💰 **Тарифы:**\n"
+            "• 15₽ - 1 день доступа\n"  
+            "• 100₽ - 30 дней доступа\n\n"
+            "💳 Оплата через CryptoBot",
             reply_markup=reply_markup
         )
 
-async def get_trial_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    
+    keyboard = []
+    for price_key, price_info in PRICES.items():
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{price_info['name']} - {price_info['amount']}₽", 
+                callback_data=f"buy_{price_key}"
+            )
+        ])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "💰 **Выберите тариф:**\n\n"
+        "🔓 **1 день** - 15₽\n"
+        "• Полный доступ на 24 часа\n\n"
+        "🔓 **30 дней** - 100₽\n"
+        "• Полный доступ на 30 дней\n\n"
+        "💳 Оплата через @CryptoBot",
+        reply_markup=reply_markup
+    )
+
+async def buy_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    price_key = query.data.replace('buy_', '')
+    price_info = PRICES.get(price_key)
+    user_id = query.from_user.id
+    
+    if not price_info:
+        await query.answer("❌ Тариф не найден")
+        return
+    
+    # Создаем счет в CryptoBot
+    invoice = checker.cryptobot.create_invoice(
+        amount=price_info['amount'],
+        description=price_info['description']
+    )
+    
+    if not invoice.get('success'):
+        await query.edit_message_text("❌ Ошибка создания счета. Попробуйте позже.")
+        return
+    
+    # Сохраняем ожидающий платеж
+    checker.user_manager.add_pending_payment(user_id, price_key, invoice['invoice_id'])
+    
+    keyboard = [
+        [InlineKeyboardButton("💳 Оплатить в CryptoBot", url=invoice['pay_url'])],
+        [InlineKeyboardButton("✅ Проверить оплату", callback_data=f"check_{invoice['invoice_id']}")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="show_prices")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"💰 **Счет на {price_info['amount']}₽**\n\n"
+        f"📝 {price_info['description']}\n\n"
+        f"👇 Нажмите кнопку для оплаты:\n\n"
+        f"**Инструкция:**\n"
+        f"1. Нажмите '💳 Оплатить в CryptoBot'\n"
+        f"2. Оплатите счет в боте\n" 
+        f"3. Вернитесь и нажмите '✅ Проверить оплату'",
+        reply_markup=reply_markup
+    )
+
+async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    invoice_id = query.data.replace('check_', '')
+    user_id = query.from_user.id
+    
+    # Проверяем статус платежа
+    invoice_status = checker.cryptobot.check_invoice(invoice_id)
+    
+    if not invoice_status:
+        await query.answer("❌ Ошибка проверки платежа")
+        return
+    
+    if invoice_status['paid']:
+        # Платеж подтвержден
+        pending_payment = checker.user_manager.get_pending_payment(user_id)
+        if pending_payment:
+            expiry_date = checker.user_manager.activate_access(user_id, pending_payment['price_key'])
+            checker.user_manager.remove_pending_payment(user_id)
+            
+            expiry_str = expiry_date.strftime("%d.%m.%Y")
+            price_info = PRICES[pending_payment['price_key']]
+            
+            await query.edit_message_text(
+                f"✅ **Оплата подтверждена!**\n\n"
+                f"💰 Сумма: {price_info['amount']}₽\n"
+                f"📅 Доступ до: {expiry_str}\n"
+                f"🔍 Проверки: безлимитно\n\n"
+                f"📁 Отправьте файл с куки для проверки!"
+            )
+        else:
+            await query.edit_message_text("❌ Данные платежа не найдены")
+    else:
+        await query.answer("⏳ Платеж еще не поступил. Попробуйте через минуту.")
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    
+    if data == "show_prices":
+        await show_prices(update, context)
+    elif data.startswith("buy_"):
+        await buy_access(update, context)
+    elif data.startswith("check_"):
+        await check_payment(update, context)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if update.message.document or (update.message.text and len(update.message.text) > 100):
+        
+        if not checker.user_manager.is_user_active(user_id):
+            keyboard = [[InlineKeyboardButton("💰 Купить доступ", callback_data="show_prices")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                "❌ **Необходим оплаченный доступ**\n\n"
+                "Для проверки куки приобретите доступ:",
+                reply_markup=reply_markup
+            )
+            return
+        
+        if update.message.text:
+            text_content = update.message.text
+            await update.message.reply_text("🔍 Проверяю куки...")
+            
+            valid_cookies, invalid_cookies, process_results, report = checker.process_multiple_cookies(text_content, user_id)
+            
+            if process_results == "payment_required":
+                return
+            
+            await update.message.reply_text(report)
+            await send_results(update, user_id, valid_cookies, invalid_cookies)
+
+        elif update.message.document:
+            file = await update.message.document.get_file()
+            file_path = f"temp_{user_id}.txt"
+            await file.download_to_drive(file_path)
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                file_content = f.read()
+            
+            await update.message.reply_text("🔍 Проверяю куки из файла...")
+            
+            valid_cookies, invalid_cookies, process_results, report = checker.process_multiple_cookies(file_content, user_id)
+            
+            if process_results == "payment_required":
+                os.remove(file_path)
+                return
+            
+            await update.message.reply_text(report)
+            await send_results(update, user_id, valid_cookies, invalid_cookies)
+            os.remove(file_path)
+
+async def send_results(update, user_id, valid_cookies, invalid_cookies):
+    timestamp = datetime.now().strftime("%H%M%S")
+    
+    if valid_cookies:
+        valid_filename = f"valid_{user_id}_{timestamp}.txt"
+        with open(valid_filename, 'w', encoding='utf-8') as f:
+            for cookie in valid_cookies:
+                f.write(cookie + '\n\n')
+        
+        await update.message.reply_document(
+            document=open(valid_filename, 'rb'),
+            caption=f"✅ Валидные куки: {len(valid_cookies)} шт."
+        )
+        os.remove(valid_filename)
+    
+    if invalid_cookies:
+        invalid_filename = f"invalid_{user_id}_{timestamp}.txt"
+        with open(invalid_filename, 'w', encoding='utf-8') as f:
+            for cookie in invalid_cookies:
+                f.write(cookie + '\n\n')
+        
+        await update.message.reply_document(
+            document=open(invalid_filename, 'rb'),
+            caption=f"❌ Невалидные куки: {len(invalid_cookies)} шт."
+        )
+        os.remove(invalid_filename)
+
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
+    
+    print("🤖 Бот с реальной оплатой запущен!")
+    print("💰 Счета: 15₽ (1 день), 100₽ (30 дней)")
+    print("💳 CryptoBot API: " + ("✅" if CRYPTOBOT_TOKEN != "ВАШ_CRYPTOBOT_API_TOKEN" else "❌ НЕ НАСТРОЕН"))
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()e: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
