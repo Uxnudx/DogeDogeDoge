@@ -29,20 +29,19 @@ class CryptoPayment:
         }
     
     async def create_invoice(self, amount: float, description: str, user_id: int):
-        """Создание многоразового инвойса для оплаты"""
+        """Создание инвойса для оплаты фрешера"""
         try:
             payload = {
-                'asset': 'USDT',  # USDT в сети Tron (TRC-20)
+                'asset': 'USDT',
                 'amount': str(amount),
                 'description': description,
-                'hidden_message': f'Оплата подписки для пользователя {user_id}',
+                'hidden_message': f'Оплата фрешера для пользователя {user_id}',
                 'paid_btn_name': 'viewItem',
                 'paid_btn_url': 'https://t.me/your_bot',
                 'payload': str(user_id),
                 'allow_comments': False,
                 'allow_anonymous': False,
                 'expires_in': 86400,  # 24 часа
-                'subscription': True  # Многоразовый счет
             }
             
             response = requests.post(
@@ -101,10 +100,9 @@ class RobloxCookieChecker:
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0'
         ]
         self.user_cookies = {}
-        self.subscriptions = {}
-        self.free_trials = {}
+        self.premium_users = {}  # Пользователи с доступом к фрешеру
         self.crypto_payment = CryptoPayment()
-        self.subscription_price = 1.0  # 1 USDT ≈ 75 рублей
+        self.fresher_price = 1.0  # 1 USDT за доступ к фрешеру
         
     def get_random_user_agent(self):
         return random.choice(self.user_agents)
@@ -126,36 +124,17 @@ class RobloxCookieChecker:
                     time.sleep(wait_time)
         return None
 
-    def check_free_trial(self, user_id):
-        """Проверка бесплатного пробного периода"""
-        if user_id not in self.free_trials:
-            # Даем 3 дня бесплатного использования
-            self.free_trials[user_id] = {
-                'start_date': datetime.now(),
-                'end_date': datetime.now() + timedelta(days=3),
-                'checks_count': 0
-            }
-            return True, "✅ Вам доступен бесплатный пробный период 3 дня!"
-        
-        trial_data = self.free_trials[user_id]
-        
-        if datetime.now() > trial_data['end_date']:
-            return False, "❌ Бесплатный период закончился. Оформите подписку за 1 USDT (≈75₽)"
-        
-        trial_data['checks_count'] += 1
-        days_left = (trial_data['end_date'] - datetime.now()).days
-        return True, f"✅ Бесплатный период активен. Осталось {days_left} дней"
-
-    def activate_subscription(self, user_id):
-        """Активация подписки"""
-        self.subscriptions[user_id] = {
+    def activate_premium(self, user_id):
+        """Активация доступа к фрешеру"""
+        self.premium_users[user_id] = {
             'activated_date': datetime.now(),
             'is_active': True,
             'payment_method': 'cryptobot'
         }
-        # Удаляем из бесплатных пробных периодов
-        if user_id in self.free_trials:
-            del self.free_trials[user_id]
+
+    def check_premium_access(self, user_id):
+        """Проверка доступа к фрешеру"""
+        return user_id in self.premium_users and self.premium_users[user_id]['is_active']
 
     def extract_cookies_from_text(self, text):
         cookies = []
@@ -181,7 +160,43 @@ class RobloxCookieChecker:
     def clean_cookie_string(self, cookie_data):
         return cookie_data.strip()
 
+    def refresh_cookie_with_auth_key(self, cookie_data, auth_key):
+        """Обновление куки через auth key (платная функция)"""
+        try:
+            if not cookie_data.startswith('.ROBLOSECURITY='):
+                cookie_string = f'.ROBLOSECURITY={cookie_data}'
+            else:
+                cookie_string = cookie_data
+            
+            headers = {
+                'User-Agent': self.get_random_user_agent(),
+                'Cookie': cookie_string,
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': auth_key
+            }
+            
+            # Запрос на обновление сессии через Roblox API
+            refresh_url = 'https://auth.roblox.com/v2/logout'
+            response = requests.post(refresh_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200 or response.status_code == 403:
+                # Получаем обновленные куки из заголовков
+                if 'set-cookie' in response.headers:
+                    new_cookies = response.headers['set-cookie']
+                    # Ищем новую куки ROBLOSECURITY
+                    roblosecurity_match = re.search(r'\.ROBLOSECURITY=([^;]+)', new_cookies)
+                    if roblosecurity_match:
+                        new_cookie = roblosecurity_match.group(1)
+                        return True, new_cookie, "✅ Куки успешно обновлена"
+            
+            return False, cookie_data, "❌ Не удалось обновить куки"
+            
+        except Exception as e:
+            print(f"❌ Ошибка обновления куки: {e}")
+            return False, cookie_data, f"❌ Ошибка: {str(e)}"
+
     def simple_cookie_validation(self, cookie_data):
+        """Проверка валидности куки (бесплатная функция)"""
         self.checked_count += 1
         cookie_clean = self.clean_cookie_string(cookie_data)
         
@@ -242,6 +257,7 @@ class RobloxCookieChecker:
         return False, cookie_clean, "❌ INVALID - All checks failed", "Unknown", "Unknown"
 
     def process_multiple_cookies(self, text, user_id):
+        """Обработка множественных куки"""
         cookies = self.extract_cookies_from_text(text)
         valid_cookies = []
         invalid_cookies = []
@@ -307,56 +323,99 @@ class RobloxCookieChecker:
         return zip_filename
 
     def get_command_keyboard(self):
-        """Клавиатура с командами для нижней части сообщений"""
+        """Клавиатура с командами"""
         keyboard = [
             [InlineKeyboardButton("🔍 Проверить куки", callback_data="check_cookies"),
              InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
-            [InlineKeyboardButton("💎 Подписка", callback_data="subscription_info"),
+            [InlineKeyboardButton("🔄 Фрешер куки", callback_data="fresher_info"),
              InlineKeyboardButton("ℹ️ Помощь", callback_data="help_command")]
         ]
         return InlineKeyboardMarkup(keyboard)
 
 checker = RobloxCookieChecker()
 
-async def show_trial_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает окно с предложением бесплатного периода"""
-    user_id = update.effective_user.id
-    
-    trial_text = """
-🎁 БЕСПЛАТНЫЙ ПРОБНЫЙ ПЕРИОД
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Главное меню бота"""
+    menu_text = """
+🤖 БОТ ПРОВЕРКИ ROBLOX КУКИ
 
-Вам доступно:
-• 3 дня бесплатного использования
-• Полный функционал бота
-• Неограниченное количество проверок
+🎯 Доступные функции:
 
-После окончания пробного периода:
-• Подписка навсегда - всего 1 USDT (≈75₽)
-• Доступ ко всем функциям
-• Приоритетная поддержка
+🔍 ПРОВЕРКА КУКИ - БЕСПЛАТНО
+• Проверка валидности куки
+• Определение пользователя
+• Статистика аккаунта
 
-Начните использовать бот прямо сейчас!
+🔄 ФРЕШЕР КУКИ - 1 USDT
+• Обновление устаревших куки
+• Автоматическое продление сессии
+• Работа через auth key
+
+💡 Просто отправьте куки для бесплатной проверки!
     """
     
-    keyboard = [
-        [InlineKeyboardButton("✅ Начать бесплатный период", callback_data="start_free_trial")],
-        [InlineKeyboardButton("💎 Купить подписку за 1 USDT", callback_data="buy_subscription")],
-        [InlineKeyboardButton("❌ Отказаться", callback_data="cancel_trial")]
-    ]
+    await update.message.reply_text(
+        menu_text,
+        reply_markup=checker.get_command_keyboard()
+    )
+
+async def show_fresher_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Информация о фрешере"""
+    user_id = update.effective_user.id
+    has_premium = checker.check_premium_access(user_id)
+    
+    if has_premium:
+        fresher_text = """
+🔄 ФРЕШЕР КУКИ - АКТИВЕН
+
+✅ У вас есть доступ к фрешеру!
+
+Как использовать:
+1. Отправьте куки для проверки
+2. После проверки нажмите "🔄 Обновить куки"
+3. Введите auth key при запросе
+4. Получите обновленную куки
+
+Ваши куки будут автоматически обновлены!
+        """
+        keyboard = [
+            [InlineKeyboardButton("🔍 Проверить куки", callback_data="check_cookies")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+        ]
+    else:
+        fresher_text = f"""
+🔄 ФРЕШЕР КУКИ - 1 USDT
+
+Преимущества:
+• Обновление устаревших куки
+• Автоматическое продление сессии
+• Работа через auth key
+• Сохранение данных аккаунта
+
+Стоимость: 1 USDT (≈75₽)
+
+Для активации фрешера необходимо произвести оплату.
+        """
+        keyboard = [
+            [InlineKeyboardButton("💎 Купить фрешер за 1 USDT", callback_data="buy_fresher")],
+            [InlineKeyboardButton("🔍 Бесплатная проверка", callback_data="check_cookies")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="main_menu")]
+        ]
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if hasattr(update, 'message'):
-        await update.message.reply_text(trial_text, reply_markup=reply_markup)
+        await update.message.reply_text(fresher_text, reply_markup=reply_markup)
     else:
-        await update.edit_message_text(trial_text, reply_markup=reply_markup)
+        await update.edit_message_text(fresher_text, reply_markup=reply_markup)
 
 async def create_payment_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Создание инвойса для оплаты"""
-    amount = checker.subscription_price
+    """Создание инвойса для оплаты фрешера"""
+    amount = checker.fresher_price
     
     success, result = await checker.crypto_payment.create_invoice(
         amount=amount,
-        description="Подписка на бота проверки куки (навсегда)",
+        description="Доступ к фрешеру куки",
         user_id=user_id
     )
     
@@ -365,11 +424,10 @@ async def create_payment_invoice(update: Update, context: ContextTypes.DEFAULT_T
         invoice_id = result['invoice_id']
         
         payment_text = f"""
-💎 ОПЛАТА ПОДПИСКИ
+💎 ОПЛАТА ФРЕШЕРА
 
 Сумма: {amount} USDT (≈75₽)
 Сеть: TRC-20 (Tron)
-Статус: Многоразовый счет
 
 Для оплаты:
 1. Нажмите кнопку "Перейти к оплате"
@@ -377,14 +435,14 @@ async def create_payment_invoice(update: Update, context: ContextTypes.DEFAULT_T
 3. Сделайте скриншот оплаты
 4. Отправьте скриншот {ADMIN_USERNAME}
 
-После проверки оплаты подписка будет активирована!
+После проверки фрешер будет активирован!
         """
         
         keyboard = [
             [InlineKeyboardButton("🔗 Перейти к оплате", url=invoice_url)],
             [InlineKeyboardButton("📸 Отправить скриншот", url=f"https://t.me/{ADMIN_USERNAME[1:]}")],
             [InlineKeyboardButton("🔄 Проверить оплату", callback_data=f"check_payment_{invoice_id}")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="subscription_info")]
+            [InlineKeyboardButton("🔙 Назад", callback_data="fresher_info")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -405,14 +463,7 @@ async def create_payment_invoice(update: Update, context: ContextTypes.DEFAULT_T
 
 async def send_check_results(update, user_id, valid_cookies, invalid_cookies, process_results):
     """Отправка результатов проверки"""
-    # Показываем статус пробного периода/подписки
-    if user_id in checker.free_trials:
-        trial_data = checker.free_trials[user_id]
-        days_left = (trial_data['end_date'] - datetime.now()).days
-        checks_count = trial_data['checks_count']
-        trial_info = f"\n🎁 Бесплатный период:\n• Осталось дней: {days_left}\n• Проверок сделано: {checks_count}"
-    else:
-        trial_info = "\n💎 Статус: Активная подписка"
+    has_premium = checker.check_premium_access(user_id)
     
     summary = f"""
 📋 РЕЗУЛЬТАТЫ ПРОВЕРКИ:
@@ -421,7 +472,8 @@ async def send_check_results(update, user_id, valid_cookies, invalid_cookies, pr
 • ✅ Валидных: {len(valid_cookies)}
 • ❌ Невалидных: {len(invalid_cookies)}
 • 📊 Успех: {len(valid_cookies)/(len(valid_cookies) + len(invalid_cookies))*100:.1f}%
-{trial_info}
+
+{'💎 Статус: Фрешер доступен' if has_premium else '💡 Фрешер: 1 USDT'}
     """
     
     keyboard = [
@@ -429,8 +481,10 @@ async def send_check_results(update, user_id, valid_cookies, invalid_cookies, pr
         [InlineKeyboardButton("📦 Скачать общий файл", callback_data="download_combined")]
     ]
     
-    if user_id in checker.free_trials:
-        keyboard.append([InlineKeyboardButton("💎 Купить подписку за 1 USDT", callback_data="buy_subscription")])
+    if has_premium and valid_cookies:
+        keyboard.append([InlineKeyboardButton("🔄 Обновить куки", callback_data="refresh_cookies")])
+    elif valid_cookies:
+        keyboard.append([InlineKeyboardButton("💎 Купить фрешер за 1 USDT", callback_data="buy_fresher")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -438,7 +492,6 @@ async def send_check_results(update, user_id, valid_cookies, invalid_cookies, pr
     
     # Отправляем детальные результаты если есть
     if process_results and len(process_results) > 0:
-        # Разбиваем длинные сообщения
         results_lines = process_results.split('\n')
         chunk_size = 10
         for i in range(0, len(results_lines), chunk_size):
@@ -447,47 +500,12 @@ async def send_check_results(update, user_id, valid_cookies, invalid_cookies, pr
                 await update.message.reply_text(f"```\n{chunk}\n```", parse_mode='MarkdownV2')
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await show_trial_window(update, context)
+    await show_main_menu(update, context)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # Проверяем есть ли подписка
-    if user_id in checker.subscriptions and checker.subscriptions[user_id]['is_active']:
-        # Пользователь с активной подпиской
-        await process_cookie_check(update, user_id)
-        return
-    
-    # Проверяем бесплатный период
-    has_trial, trial_message = checker.check_free_trial(user_id)
-    
-    if not has_trial:
-        # Показываем окно с предложением подписки
-        subscription_text = f"""
-💎 ТРЕБУЕТСЯ ПОДПИСКА
-
-Ваш бесплатный пробный период закончился.
-Для продолжения использования бота необходимо оформить подписку.
-
-Всего 1 USDT (≈75₽) за永久 (навсегда)! ✅
-
-Преимущества подписки:
-• Неограниченные проверки куки
-• Приоритетная обработка
-• Все функции бота
-• Поддержка 24/7
-        """
-        
-        keyboard = [
-            [InlineKeyboardButton("💎 Купить подписку за 1 USDT", callback_data="buy_subscription")],
-            [InlineKeyboardButton("🔍 Узнать подробности", callback_data="subscription_details")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(subscription_text, reply_markup=reply_markup)
-        return
-    
-    # Если есть бесплатный период, обрабатываем проверку
+    # Обрабатываем проверку куки (бесплатно)
     await process_cookie_check(update, user_id)
 
 async def process_cookie_check(update: Update, user_id: int):
@@ -526,6 +544,63 @@ async def process_cookie_check(update: Update, user_id: int):
         await send_check_results(update, user_id, valid_cookies, invalid_cookies, process_results)
         os.remove(file_path)
 
+async def handle_auth_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода auth key для фрешера"""
+    user_id = update.effective_user.id
+    
+    if not checker.check_premium_access(user_id):
+        await update.message.reply_text("❌ У вас нет доступа к фрешеру. Приобретите доступ за 1 USDT.")
+        return
+    
+    if user_id not in checker.user_cookies or not checker.user_cookies[user_id]['valid_cookies']:
+        await update.message.reply_text("❌ Сначала отправьте куки для проверки.")
+        return
+    
+    auth_key = update.message.text.strip()
+    
+    # Обновляем первую валидную куки
+    cookie_to_refresh = checker.user_cookies[user_id]['valid_cookies'][0]
+    username = checker.user_cookies[user_id]['usernames'][0]
+    
+    await update.message.reply_text(f"🔄 Обновляю куки для {username}...")
+    
+    success, new_cookie, message = checker.refresh_cookie_with_auth_key(cookie_to_refresh, auth_key)
+    
+    if success:
+        # Обновляем куки в хранилище
+        checker.user_cookies[user_id]['valid_cookies'][0] = new_cookie
+        
+        # Проверяем валидность новой куки
+        is_valid, _, status, _, _ = checker.simple_cookie_validation(new_cookie)
+        
+        if is_valid:
+            result_text = f"""
+✅ КУКИ УСПЕШНО ОБНОВЛЕНА!
+
+👤 Пользователь: {username}
+🔄 Статус: Обновлена и валидна
+
+Новая куки:
+{new_cookie[:100]}...
+            """
+            await update.message.reply_text(result_text)
+            
+            # Сохраняем в файл
+            timestamp = datetime.now().strftime("%H%M%S")
+            filename = f"refreshed_{user_id}_{timestamp}.txt"
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(new_cookie)
+            
+            await update.message.reply_document(
+                document=open(filename, 'rb'),
+                caption=f"🔄 Обновленная куки для {username}"
+            )
+            os.remove(filename)
+        else:
+            await update.message.reply_text("❌ Куки обновлена, но не прошла валидацию")
+    else:
+        await update.message.reply_text(f"❌ {message}")
+
 async def send_results_files(update, user_id, valid_cookies, invalid_cookies):
     """Отправка файлов с результатами"""
     timestamp = datetime.now().strftime("%H%M%S")
@@ -562,15 +637,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = query.from_user.id
     
-    if query.data == "start_free_trial":
-        has_trial, trial_message = checker.check_free_trial(user_id)
+    if query.data == "main_menu":
+        await show_main_menu(query, context)
+    
+    elif query.data == "check_cookies":
         await query.edit_message_text(
-            f"🎁 {trial_message}\n\n"
-            f"Теперь вы можете отправлять куки для проверки!\n\n"
-            f"Просто отправьте куки текстом или файлом."
+            "🔍 Отправьте куки для проверки:\n\n"
+            "Вы можете отправить:\n"
+            "• Текст с куки\n"
+            "• Файл .txt с куки\n"
+            "• Несколько куки в одном сообщении\n\n"
+            "✅ Проверка куки - БЕСПЛАТНО",
+            reply_markup=checker.get_command_keyboard()
         )
     
-    elif query.data == "buy_subscription":
+    elif query.data == "fresher_info":
+        await show_fresher_info(query, context)
+    
+    elif query.data == "buy_fresher":
         await create_payment_invoice(query, context, user_id)
     
     elif query.data.startswith("check_payment_"):
@@ -580,12 +664,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success, result = await checker.crypto_payment.check_invoice_status(invoice_id)
         
         if success and result.get('status') == 'paid':
-            # Активируем подписку
-            checker.activate_subscription(user_id)
+            # Активируем фрешер
+            checker.activate_premium(user_id)
             await query.edit_message_text(
                 "✅ ОПЛАТА ПОДТВЕРЖДЕНА!\n\n"
-                "🎉 Ваша подписка активирована навсегда!\n\n"
-                "Теперь вы можете использовать все функции бота без ограничений."
+                "🎉 Доступ к фрешеру активирован!\n\n"
+                "Теперь вы можете обновлять куки через auth key."
             )
         else:
             await query.edit_message_text(
@@ -597,8 +681,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Или попробуйте проверить снова через 5 минут"
             )
     
-    elif query.data == "subscription_info":
-        await show_trial_window(query, context)
+    elif query.data == "refresh_cookies":
+        if not checker.check_premium_access(user_id):
+            await query.edit_message_text("❌ У вас нет доступа к фрешеру. Приобретите доступ за 1 USDT.")
+            return
+        
+        if user_id not in checker.user_cookies or not checker.user_cookies[user_id]['valid_cookies']:
+            await query.edit_message_text("❌ Нет валидных куки для обновления.")
+            return
+        
+        await query.edit_message_text(
+            "🔄 ОБНОВЛЕНИЕ КУКИ\n\n"
+            "Для обновления куки требуется auth key.\n\n"
+            "Как получить auth key:\n"
+            "1. Откройте браузер\n"
+            "2. Перейдите на Roblox.com\n"
+            "3. Откройте Developer Tools (F12)\n"
+            "4. Найдите заголовок X-CSRF-TOKEN в запросах\n\n"
+            "Отправьте auth key текстовым сообщением:"
+        )
     
     elif query.data == "show_stats":
         stats_text = f"""
@@ -608,21 +709,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Валидных куки: {checker.valid_count}
 • Невалидных: {checker.checked_count - checker.valid_count}
 • Процент валидных: {checker.valid_count/max(1, checker.checked_count)*100:.1f}%
-• Активных подписок: {len(checker.subscriptions)}
-• Бесплатных пользователей: {len(checker.free_trials)}
+• Пользователей с фрешером: {len(checker.premium_users)}
         """
         await query.edit_message_text(
             stats_text,
-            reply_markup=checker.get_command_keyboard()
-        )
-    
-    elif query.data == "check_cookies":
-        await query.edit_message_text(
-            "🔍 Отправьте куки для проверки:\n\n"
-            "Вы можете отправить:\n"
-            "• Текст с куки\n"
-            "• Файл .txt с куки\n"
-            "• Несколько куки в одном сообщении",
             reply_markup=checker.get_command_keyboard()
         )
     
@@ -647,22 +737,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.message.reply_text("❌ Нет данных для скачивания")
     
-    elif query.data in ["cancel_trial", "back_to_trial", "subscription_details"]:
-        await show_trial_window(query, context)
-    
     elif query.data == "help_command":
         help_text = f"""
 ℹ️ ПОМОЩЬ ПО БОТУ
 
+Бесплатные функции:
+• Проверка валидности куки
+• Определение пользователя
+• Статистика аккаунта
+• Скачивание результатов
+
+Платные функции (1 USDT):
+• Обновление куки через auth key
+• Автоматическое продление сессии
+
 Как использовать:
 1. Отправьте куки текстом или файлом
-2. Бот проверит валидность
-3. Получите результаты
-
-Оплата подписки:
-• 1 USDT (≈75₽) за永久 (навсегда)
-• Оплата через Crypto Bot (USDT TRC-20)
-• После оплаты отправьте скриншот {ADMIN_USERNAME}
+2. Получите результаты проверки
+3. При необходимости обновите куки
 
 Поддержка: {ADMIN_USERNAME}
         """
@@ -675,10 +767,13 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_auth_key))
     app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    print("🤖 Бот проверки Roblox куки с оплатой запущен...")
+    print("🤖 Бот проверки Roblox куки запущен...")
+    print("✅ Чекер - бесплатно")
+    print("✅ Фрешер - 1 USDT")
     print("✅ Бот готов к работе!")
     app.run_polling()
 
