@@ -142,9 +142,9 @@ class RobloxCookieChecker:
         
         # Улучшенный паттерн для поиска куки
         patterns = [
-            r'_\\|WARNING:-DO-NOT-SHARE-THIS\\.--[^\\s]+.*?(?=\\s|$)',
-            r'_\\|WARNING:-DO-NOT-SHARE-THIS[^\\s]+',
-            r'ROBLOSECURITY=[^\\s]+',
+            r'_\|WARNING:-DO-NOT-SHARE-THIS\.--[^\s]+.*?(?=\s|$)',
+            r'_\|WARNING:-DO-NOT-SHARE-THIS[^\s]+',
+            r'ROBLOSECURITY=[^\s]+',
         ]
         
         for pattern in patterns:
@@ -658,7 +658,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = query.from_user.id  # Исправлено: query.from_user.id вместо query.effective_user.id
+    user_id = query.from_user.id
     
     if query.data == "main_menu":
         await show_main_menu(query, context)
@@ -675,7 +675,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif query.data == "fresher_info":
-        await show_fresher_info(query, context, user_id)  # Передаем user_id явно
+        await show_fresher_info(query, context, user_id)
     
     elif query.data == "buy_fresher":
         await create_payment_invoice(query, context, user_id)
@@ -797,4 +797,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • ФРЕШЕР КУКИ - обновляет валидные куки
 • Выкидывает ВСЕХ других пользователей с аккаунта
 • Оставляет доступ ТОЛЬКО у вас
-• Воз
+• Возвращает 100% валидную фрешнутую куки
+
+📞 Поддержка: {ADMIN_USERNAME}
+        """
+        await query.edit_message_text(
+            help_text,
+            reply_markup=checker.get_command_keyboard()
+        )
+
+def main():
+    """Запуск бота"""
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    # Обработчики команд
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_message))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    # Запуск бота
+    print("🤖 Бот запущен...")
+    app.run_polling()
+
+if __name__ == '__main__':
+    main()
