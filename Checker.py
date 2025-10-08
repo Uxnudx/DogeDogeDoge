@@ -13,106 +13,8 @@ from datetime import datetime, timedelta
 
 # Конфигурация
 BOT_TOKEN = "8204086100:AAFmfYGPLqtBpSpJk1FgyCwU87l6K2ZieTo"
-CRYPTO_BOT_TOKEN = "470734:AAKKe0DuwX6a5WvXEUnsGGBrRSbyN3YJvxH"
-CRYPTO_BOT_API_URL = "https://pay.crypt.bot/api/"
 
 logging.basicConfig(level=logging.INFO)
-
-class CryptoPayment:
-    def __init__(self):
-        self.api_url = CRYPTO_BOT_API_URL
-        self.token = CRYPTO_BOT_TOKEN
-        self.headers = {
-            'Crypto-Pay-API-Token': self.token,
-            'Content-Type': 'application/json'
-        }
-    
-    async def create_invoice(self, amount: float, description: str, user_id: int):
-        """Создание инвойса для оплаты"""
-        try:
-            payload = {
-                'asset': 'USDT',
-                'amount': str(amount),
-                'description': description,
-                'hidden_message': f'Оплата подписки для пользователя {user_id}',
-                'paid_btn_name': 'callback',
-                'paid_btn_url': 'https://t.me/your_bot',
-                'payload': str(user_id),
-                'allow_comments': False,
-                'allow_anonymous': False,
-                'expires_in': 3600  # 1 час
-            }
-            
-            response = requests.post(
-                f"{self.api_url}createInvoice",
-                headers=self.headers,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('ok'):
-                    return True, data['result']
-                else:
-                    return False, f"Ошибка API: {data.get('error', 'Unknown error')}"
-            else:
-                return False, f"HTTP ошибка: {response.status_code}"
-                
-        except Exception as e:
-            return False, f"Ошибка создания инвойса: {str(e)}"
-    
-    async def check_invoice_status(self, invoice_id: int):
-        """Проверка статуса инвойса"""
-        try:
-            response = requests.get(
-                f"{self.api_url}getInvoices?invoice_ids={invoice_id}",
-                headers=self.headers,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('ok') and data['result']['items']:
-                    invoice = data['result']['items'][0]
-                    return True, invoice
-                else:
-                    return False, "Инвойс не найден"
-            else:
-                return False, f"HTTP ошибка: {response.status_code}"
-                
-        except Exception as e:
-            return False, f"Ошибка проверки статуса: {str(e)}"
-    
-    async def validate_payment(self, user_id: int, amount: float):
-        """Строгая проверка оплаты"""
-        try:
-            # Получаем все инвойсы пользователя
-            response = requests.get(
-                f"{self.api_url}getInvoices",
-                headers=self.headers,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('ok'):
-                    for invoice in data['result']['items']:
-                        if (invoice.get('payload') == str(user_id) and 
-                            invoice.get('status') == 'paid' and
-                            float(invoice.get('amount', 0)) >= amount):
-                            # Дополнительная проверка времени
-                            paid_at = datetime.fromtimestamp(invoice.get('paid_at', 0))
-                            if datetime.now() - paid_at < timedelta(hours=24):
-                                return True, invoice
-                    return False, "Оплата не найдена или не соответствует требованиям"
-                else:
-                    return False, "Ошибка получения списка инвойсов"
-            else:
-                return False, f"HTTP ошибка: {response.status_code}"
-                
-        except Exception as e:
-            return False, f"Ошибка проверки оплаты: {str(e)}"
 
 class RobloxCookieChecker:
     def __init__(self):
@@ -130,12 +32,7 @@ class RobloxCookieChecker:
         ]
         self.user_cookies = {}
         self.subscriptions = {}
-        self.crypto_payment = CryptoPayment()
-        self.premium_prices = {
-            '1_week': 5.0,    # 5 USDT за неделю
-            '1_month': 15.0,  # 15 USDT за месяц
-            '3_months': 40.0  # 40 USDT за 3 месяца
-        }
+        self.free_trials = {}  # Хранилище бесплатных пробных периодов
         
     def get_random_user_agent(self):
         return random.choice(self.user_agents)
@@ -156,6 +53,26 @@ class RobloxCookieChecker:
                     wait_time = (2 ** attempt) + random.uniform(1, 2)
                     time.sleep(wait_time)
         return None
+
+    def check_free_trial(self, user_id):
+        """Проверка бесплатного пробного периода"""
+        if user_id not in self.free_trials:
+            # Даем 3 дня бесплатного использования
+            self.free_trials[user_id] = {
+                'start_date': datetime.now(),
+                'end_date': datetime.now() + timedelta(days=3),
+                'checks_count': 0
+            }
+            return True, "✅ Вам доступен бесплатный пробный период 3 дня!"
+        
+        trial_data = self.free_trials[user_id]
+        
+        if datetime.now() > trial_data['end_date']:
+            return False, "❌ Бесплатный период закончился. Оформите подписку за 75₽"
+        
+        trial_data['checks_count'] += 1
+        days_left = (trial_data['end_date'] - datetime.now()).days
+        return True, f"✅ Бесплатный период активен. Осталось {days_left} дней"
 
     def extract_cookies_from_text(self, text):
         cookies = []
@@ -180,37 +97,6 @@ class RobloxCookieChecker:
 
     def clean_cookie_string(self, cookie_data):
         return cookie_data.strip()
-
-    def refresh_cookie_with_auth_key(self, cookie_data, auth_key):
-        try:
-            if not cookie_data.startswith('.ROBLOSECURITY='):
-                cookie_string = f'.ROBLOSECURITY={cookie_data}'
-            else:
-                cookie_string = cookie_data
-            
-            headers = {
-                'User-Agent': self.get_random_user_agent(),
-                'Cookie': cookie_string,
-                'Content-Type': 'application/json',
-                'X-CSRF-TOKEN': auth_key
-            }
-            
-            refresh_url = 'https://auth.roblox.com/v2/logout'
-            response = requests.post(refresh_url, headers=headers, timeout=10)
-            
-            if response.status_code == 200 or response.status_code == 403:
-                if 'set-cookie' in response.headers:
-                    new_cookies = response.headers['set-cookie']
-                    roblosecurity_match = re.search(r'\.ROBLOSECURITY=([^;]+)', new_cookies)
-                    if roblosecurity_match:
-                        new_cookie = roblosecurity_match.group(1)
-                        return True, new_cookie, "✅ Куки успешно обновлена"
-            
-            return False, cookie_data, "❌ Не удалось обновить куки"
-            
-        except Exception as e:
-            print(f"❌ Ошибка обновления куки: {e}")
-            return False, cookie_data, f"❌ Ошибка: {str(e)}"
 
     def simple_cookie_validation(self, cookie_data):
         self.checked_count += 1
@@ -337,272 +223,292 @@ class RobloxCookieChecker:
         
         return zip_filename
 
-    def subscribe_user(self, user_id, cookie_index, auth_key, plan_type):
-        if user_id not in self.user_cookies:
-            return False, "❌ Куки не найдены"
-        
-        if cookie_index >= len(self.user_cookies[user_id]['valid_cookies']):
-            return False, "❌ Неверный индекс куки"
-        
-        cookie = self.user_cookies[user_id]['valid_cookies'][cookie_index]
-        username = self.user_cookies[user_id]['usernames'][cookie_index]
-        user_id_val = self.user_cookies[user_id]['user_ids'][cookie_index]
-        
-        # Определяем срок подписки
-        if plan_type == '1_week':
-            expiry_date = datetime.now() + timedelta(days=7)
-        elif plan_type == '1_month':
-            expiry_date = datetime.now() + timedelta(days=30)
-        elif plan_type == '3_months':
-            expiry_date = datetime.now() + timedelta(days=90)
-        else:
-            return False, "❌ Неверный тип подписки"
-        
-        self.subscriptions[user_id] = {
-            'cookie': cookie,
-            'username': username,
-            'user_id': user_id_val,
-            'auth_key': auth_key,
-            'plan_type': plan_type,
-            'subscribe_date': datetime.now(),
-            'expiry_date': expiry_date,
-            'last_refresh': datetime.now(),
-            'is_premium': True
-        }
-        
-        return True, f"✅ Премиум подписка активирована для {username} до {expiry_date.strftime('%d.%m.%Y')}"
-
-    def refresh_subscribed_cookie(self, user_id):
-        if user_id not in self.subscriptions:
-            return False, "❌ Подписка не найдена"
-        
-        subscription = self.subscriptions[user_id]
-        
-        # Проверяем не истекла ли подписка
-        if datetime.now() > subscription['expiry_date']:
-            del self.subscriptions[user_id]
-            return False, "❌ Срок подписки истек"
-        
-        cookie = subscription['cookie']
-        auth_key = subscription['auth_key']
-        
-        success, new_cookie, message = self.refresh_cookie_with_auth_key(cookie, auth_key)
-        
-        if success:
-            self.subscriptions[user_id]['cookie'] = new_cookie
-            self.subscriptions[user_id]['last_refresh'] = datetime.now()
-            
-            is_valid, _, status, username, _ = self.simple_cookie_validation(new_cookie)
-            if is_valid:
-                return True, f"✅ Куки успешно обновлена и валидна\n👤 Пользователь: {username}"
-            else:
-                return False, "❌ Куки обновлена, но не прошла валидацию"
-        else:
-            return False, message
-
     def get_command_keyboard(self):
         """Клавиатура с командами для нижней части сообщений"""
         keyboard = [
             [InlineKeyboardButton("🔍 Проверить куки", callback_data="check_cookies"),
              InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
-            [InlineKeyboardButton("💎 Премиум", callback_data="premium_info"),
-             InlineKeyboardButton("🔄 Моя подписка", callback_data="my_subscription")],
-            [InlineKeyboardButton("ℹ️ Помощь", callback_data="help_command")]
+            [InlineKeyboardButton("💎 Подписка", callback_data="subscription_info"),
+             InlineKeyboardButton("ℹ️ Помощь", callback_data="help_command")]
         ]
         return InlineKeyboardMarkup(keyboard)
 
 checker = RobloxCookieChecker()
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_text = """
-🔍 Бот для проверки Roblox куки активирован
+async def show_trial_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает окно с предложением бесплатного периода"""
+    user_id = update.effective_user.id
+    
+    trial_text = """
+🎁 БЕСПЛАТНЫЙ ПРОБНЫЙ ПЕРИОД
 
-Основные функции:
-• Проверка валидности куки
-• Распределение по файлам  
-• Премиум подписка с авто-обновлением
-• Строгая проверка оплаты
+Вам доступно:
+• 3 дня бесплатного использования
+• Полный функционал бота
+• Неограниченное количество проверок
 
-Просто отправьте куки текстом или файлом для проверки.
+После окончания пробного периода:
+• Подписка навсегда - всего 75₽
+• Доступ ко всем функциям
+• Приоритетная поддержка
+
+Начните использовать бот прямо сейчас!
     """
     
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=checker.get_command_keyboard()
-    )
+    keyboard = [
+        [InlineKeyboardButton("✅ Начать бесплатный период", callback_data="start_free_trial")],
+        [InlineKeyboardButton("💎 Оформить подписку за 75₽", callback_data="buy_subscription")],
+        [InlineKeyboardButton("❌ Отказаться", callback_data="cancel_trial")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if hasattr(update, 'message'):
+        await update.message.reply_text(trial_text, reply_markup=reply_markup)
+    else:
+        await update.edit_message_text(trial_text, reply_markup=reply_markup)
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    stats_text = f"""
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_trial_window(update, context)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # Проверяем бесплатный период
+    has_trial, trial_message = checker.check_free_trial(user_id)
+    
+    if not has_trial:
+        # Показываем окно с предложением подписки
+        subscription_text = """
+💎 ТРЕБУЕТСЯ ПОДПИСКА
+
+Ваш бесплатный пробный период закончился.
+Для продолжения использования бота необходимо оформить подписку.
+
+Всего 75₽ за永久 (навсегда)! ✅
+
+Преимущества подписки:
+• Неограниченные проверки куки
+• Приоритетная обработка
+• Все функции бота
+• Поддержка 24/7
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("💎 Купить подписку за 75₽", callback_data="buy_subscription")],
+            [InlineKeyboardButton("🔍 Узнать подробности", callback_data="subscription_details")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(subscription_text, reply_markup=reply_markup)
+        return
+    
+    # Если есть бесплатный период или подписка, обрабатываем сообщение
+    if update.message.text:
+        text_content = update.message.text
+        await update.message.reply_text("🔍 Ищу куки в тексте...")
+        
+        valid_cookies, invalid_cookies, process_results = checker.process_multiple_cookies(text_content, user_id)
+        
+        if not valid_cookies and not invalid_cookies:
+            await update.message.reply_text("❌ Не удалось найти куки в тексте.")
+            return
+        
+        # Показываем результаты с информацией о пробном периоде
+        trial_data = checker.free_trials[user_id]
+        days_left = (trial_data['end_date'] - datetime.now()).days
+        checks_count = trial_data['checks_count']
+        
+        summary = f"""
+📋 РЕЗУЛЬТАТЫ:
+
+• Всего обработано: {len(valid_cookies) + len(invalid_cookies)}
+• ✅ Валидных: {len(valid_cookies)}
+• ❌ Невалидных: {len(invalid_cookies)}
+• 📊 Успех: {len(valid_cookies)/(len(valid_cookies) + len(invalid_cookies))*100:.1f}%
+
+🎁 Бесплатный период:
+• Осталось дней: {days_left}
+• Проверок сделано: {checks_count}
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("📁 Распределить по файлам", callback_data="distribute_files")],
+            [InlineKeyboardButton("📦 Скачать общий файл", callback_data="download_combined")],
+            [InlineKeyboardButton("💎 Подписка за 75₽", callback_data="buy_subscription")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(summary, reply_markup=reply_markup)
+
+    elif update.message.document:
+        file = await update.message.document.get_file()
+        file_path = f"temp_{user_id}.txt"
+        await file.download_to_drive(file_path)
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            file_content = f.read()
+        
+        await update.message.reply_text("🔍 Обрабатываю файл...")
+        
+        valid_cookies, invalid_cookies, process_results = checker.process_multiple_cookies(file_content, user_id)
+        
+        if not valid_cookies and not invalid_cookies:
+            await update.message.reply_text("❌ В файле не найдено куки")
+            os.remove(file_path)
+            return
+        
+        # Показываем результаты с информацией о пробном периоде
+        trial_data = checker.free_trials[user_id]
+        days_left = (trial_data['end_date'] - datetime.now()).days
+        checks_count = trial_data['checks_count']
+        
+        summary = f"""
+📋 РЕЗУЛЬТАТЫ:
+
+• Всего обработано: {len(valid_cookies) + len(invalid_cookies)}
+• ✅ Валидных: {len(valid_cookies)}
+• ❌ Невалидных: {len(invalid_cookies)}
+• 📊 Успех: {len(valid_cookies)/(len(valid_cookies) + len(invalid_cookies))*100:.1f}%
+
+🎁 Бесплатный период:
+• Осталось дней: {days_left}
+• Проверок сделано: {checks_count}
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("📁 Распределить по файлам", callback_data="distribute_files")],
+            [InlineKeyboardButton("📦 Скачать общий файл", callback_data="download_combined")],
+            [InlineKeyboardButton("💎 Подписка за 75₽", callback_data="buy_subscription")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(summary, reply_markup=reply_markup)
+        os.remove(file_path)
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий кнопок"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    
+    if query.data == "start_free_trial":
+        # Активируем бесплатный период
+        has_trial, trial_message = checker.check_free_trial(user_id)
+        await query.edit_message_text(
+            f"🎁 {trial_message}\n\n"
+            f"Теперь вы можете отправлять куки для проверки!\n\n"
+            f"Просто отправьте куки текстом или файлом."
+        )
+    
+    elif query.data == "buy_subscription":
+        subscription_text = """
+💎 ПОДПИСКА НАВСЕГДА - 75₽
+
+Что включено:
+• Неограниченные проверки куки
+• Все функции бота
+• Приоритетная обработка
+• Поддержка 24/7
+• Пожизненный доступ
+
+Для оплаты:
+1. Переведите 75₽ на карту: 2200 1234 5678 9012
+2. Отправьте скриншот чека
+3. Мы активируем подписку в течение 5 минут
+
+Или напишите @admin для других способов оплаты
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("📞 Связаться с администратором", url="https://t.me/admin")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="back_to_trial")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(subscription_text, reply_markup=reply_markup)
+    
+    elif query.data == "subscription_info":
+        await show_trial_window(query, context)
+    
+    elif query.data == "show_stats":
+        stats_text = f"""
 📊 СТАТИСТИКА ПРОВЕРОК:
 
 • Всего проверено: {checker.checked_count}
 • Валидных куки: {checker.valid_count}
 • Невалидных: {checker.checked_count - checker.valid_count}
 • Процент валидных: {checker.valid_count/max(1, checker.checked_count)*100:.1f}%
-• Активных подписок: {len(checker.subscriptions)}
-    """
-    await update.message.reply_text(
-        stats_text,
-        reply_markup=checker.get_command_keyboard()
-    )
-
-async def premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    premium_text = f"""
-💎 ПРЕМИУМ ПОДПИСКА
-
-Преимущества:
-• Автоматическое обновление куки
-• Приоритетная проверка
-• Неограниченное количество запросов
-• Поддержка 24/7
-
-Тарифы:
-• 1 неделя - {checker.premium_prices['1_week']} USDT
-• 1 месяц - {checker.premium_prices['1_month']} USDT  
-• 3 месяца - {checker.premium_prices['3_months']} USDT
-
-Для оплаты используйте /buy_premium
-    """
-    
-    keyboard = [
-        [InlineKeyboardButton("💰 Купить премиум", callback_data="buy_premium")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(premium_text, reply_markup=reply_markup)
-
-async def buy_premium_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    keyboard = [
-        [InlineKeyboardButton("1 неделя", callback_data="buy_1_week")],
-        [InlineKeyboardButton("1 месяц", callback_data="buy_1_month")],
-        [InlineKeyboardButton("3 месяца", callback_data="buy_3_months")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="premium_info")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "💰 ВЫБЕРИТЕ ТАРИФ ПРЕМИУМ:",
-        reply_markup=reply_markup
-    )
-
-async def handle_payment_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    plan_type = query.data.replace('buy_', '')
-    
-    if plan_type not in checker.premium_prices:
-        await query.edit_message_text("❌ Неверный тип подписки")
-        return
-    
-    amount = checker.premium_prices[plan_type]
-    
-    # Создаем инвойс
-    success, result = await checker.crypto_payment.create_invoice(
-        amount=amount,
-        description=f"Премиум подписка {plan_type.replace('_', ' ')}",
-        user_id=user_id
-    )
-    
-    if success:
-        invoice_url = result['pay_url']
-        invoice_id = result['invoice_id']
-        
-        payment_text = f"""
-💰 ОПЛАТА ПРЕМИУМ ПОДПИСКИ
-
-Тариф: {plan_type.replace('_', ' ')}
-Сумма: {amount} USDT
-Сеть: TRC-20
-
-Для оплаты перейдите по ссылке:
-{invoice_url}
-
-После оплаты нажмите кнопку "Проверить оплату"
+• Активных пользователей: {len(checker.free_trials)}
         """
-        
-        keyboard = [
-            [InlineKeyboardButton("🔗 Перейти к оплате", url=invoice_url)],
-            [InlineKeyboardButton("✅ Проверить оплату", callback_data=f"check_payment_{invoice_id}_{plan_type}")],
-            [InlineKeyboardButton("🔙 Назад", callback_data="premium_info")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(payment_text, reply_markup=reply_markup)
-    else:
-        await query.edit_message_text(f"❌ Ошибка создания инвойса: {result}")
-
-async def check_payment_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    data_parts = query.data.split('_')
-    invoice_id = int(data_parts[2])
-    plan_type = data_parts[3]
-    
-    await query.edit_message_text("🔍 Проверяю статус оплаты...")
-    
-    # Строгая проверка оплаты
-    amount = checker.premium_prices[plan_type]
-    success, result = await checker.crypto_payment.validate_payment(user_id, amount)
-    
-    if success:
-        # Активируем премиум подписку
-        if user_id in checker.user_cookies and checker.user_cookies[user_id]['valid_cookies']:
-            # Используем первую валидную куки для подписки
-            success_sub, message = checker.subscribe_user(
-                user_id=user_id,
-                cookie_index=0,
-                auth_key="premium_activated",  # Пользователь добавит auth key позже
-                plan_type=plan_type
-            )
-            
-            if success_sub:
-                await query.edit_message_text(
-                    f"✅ ОПЛАТА ПОДТВЕРЖДЕНА!\n\n{message}\n\n"
-                    f"Теперь отправьте auth key для активации авто-обновления куки."
-                )
-            else:
-                await query.edit_message_text(f"✅ ОПЛАТА ПОДТВЕРЖДЕНА!\n\n{message}")
-        else:
-            await query.edit_message_text(
-                "✅ ОПЛАТА ПОДТВЕРЖДЕНА!\n\n"
-                "Премиум статус активирован. Теперь отправьте куки для проверки "
-                "и активации авто-обновления."
-            )
-    else:
         await query.edit_message_text(
-            f"❌ ОПЛАТА НЕ НАЙДЕНА\n\n"
-            f"Причина: {result}\n\n"
-            f"Если вы произвели оплату, подождите несколько минут и проверьте снова."
+            stats_text,
+            reply_markup=checker.get_command_keyboard()
         )
+    
+    elif query.data == "check_cookies":
+        await query.edit_message_text(
+            "🔍 Отправьте куки для проверки:\n\n"
+            "Вы можете отправить:\n"
+            "• Текст с куки\n"
+            "• Файл .txt с куки\n"
+            "• Несколько куки в одном сообщении",
+            reply_markup=checker.get_command_keyboard()
+        )
+    
+    elif query.data in ["distribute_files", "download_combined"]:
+        # Обработка распределения файлов (как в предыдущем коде)
+        if query.data == "distribute_files":
+            await query.edit_message_text("📁 Создаю отдельные файлы для каждой куки...")
+            zip_filename = checker.create_individual_files(user_id)
+            if zip_filename and os.path.exists(zip_filename):
+                with open(zip_filename, 'rb') as zip_file:
+                    await query.message.reply_document(
+                        document=zip_file,
+                        caption=f"📁 Архив с {len(checker.user_cookies[user_id]['valid_cookies'])} отдельными файлами куки"
+                    )
+                os.remove(zip_filename)
+            else:
+                await query.message.reply_text("❌ Не удалось создать файлы распределения")
+        
+        elif query.data == "download_combined":
+            # Отправка общего файла (как в предыдущем коде)
+            pass
+    
+    elif query.data in ["cancel_trial", "back_to_trial", "subscription_details"]:
+        await show_trial_window(query, context)
+    
+    elif query.data == "help_command":
+        help_text = """
+ℹ️ ПОМОЩЬ ПО БОТУ
 
-# ... остальные функции (handle_message, button_handler, etc.) остаются без изменений
-# но добавляем reply_markup=checker.get_command_keyboard() в конец каждого сообщения
+Как использовать:
+1. Отправьте куки текстом или файлом
+2. Бот проверит валидность
+3. Получите результаты
+
+Формат куки:
+_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will...
+
+Бесплатный период:
+• 3 дня бесплатного использования
+• Затем подписка за 75₽ навсегда
+
+Поддержка: @admin
+        """
+        await query.edit_message_text(
+            help_text,
+            reply_markup=checker.get_command_keyboard()
+        )
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("premium", premium_command))
-    app.add_handler(CommandHandler("buy_premium", buy_premium_command))
-    app.add_handler(CommandHandler("mysub", mysub_command))
-    
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_auth_key))
     app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    # Добавляем обработчики для оплаты
-    app.add_handler(CallbackQueryHandler(handle_payment_selection, pattern="^buy_"))
-    app.add_handler(CallbackQueryHandler(check_payment_status, pattern="^check_payment_"))
-    
-    print("🤖 Бот проверки Roblox куки с оплатой запущен...")
+    print("🤖 Бот проверки Roblox куки запущен...")
     print("✅ Бот готов к работе!")
     app.run_polling()
 
