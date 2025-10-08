@@ -403,6 +403,49 @@ async def create_payment_invoice(update: Update, context: ContextTypes.DEFAULT_T
         """
         await update.edit_message_text(error_text)
 
+async def send_check_results(update, user_id, valid_cookies, invalid_cookies, process_results):
+    """Отправка результатов проверки"""
+    # Показываем статус пробного периода/подписки
+    if user_id in checker.free_trials:
+        trial_data = checker.free_trials[user_id]
+        days_left = (trial_data['end_date'] - datetime.now()).days
+        checks_count = trial_data['checks_count']
+        trial_info = f"\n🎁 Бесплатный период:\n• Осталось дней: {days_left}\n• Проверок сделано: {checks_count}"
+    else:
+        trial_info = "\n💎 Статус: Активная подписка"
+    
+    summary = f"""
+📋 РЕЗУЛЬТАТЫ ПРОВЕРКИ:
+
+• Всего обработано: {len(valid_cookies) + len(invalid_cookies)}
+• ✅ Валидных: {len(valid_cookies)}
+• ❌ Невалидных: {len(invalid_cookies)}
+• 📊 Успех: {len(valid_cookies)/(len(valid_cookies) + len(invalid_cookies))*100:.1f}%
+{trial_info}
+    """
+    
+    keyboard = [
+        [InlineKeyboardButton("📁 Распределить по файлам", callback_data="distribute_files")],
+        [InlineKeyboardButton("📦 Скачать общий файл", callback_data="download_combined")]
+    ]
+    
+    if user_id in checker.free_trials:
+        keyboard.append([InlineKeyboardButton("💎 Купить подписку за 1 USDT", callback_data="buy_subscription")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(summary, reply_markup=reply_markup)
+    
+    # Отправляем детальные результаты если есть
+    if process_results and len(process_results) > 0:
+        # Разбиваем длинные сообщения
+        results_lines = process_results.split('\n')
+        chunk_size = 10
+        for i in range(0, len(results_lines), chunk_size):
+            chunk = '\n'.join(results_lines[i:i + chunk_size])
+            if chunk.strip():
+                await update.message.reply_text(f"```\n{chunk}\n```", parse_mode='MarkdownV2')
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_trial_window(update, context)
 
@@ -460,36 +503,7 @@ async def process_cookie_check(update: Update, user_id: int):
             return
         
         # Показываем результаты
-        if user_id in checker.free_trials:
-            trial_data = checker.free_trials[user_id]
-            days_left = (trial_data['end_date'] - datetime.now()).days
-            checks_count = trial_data['checks_count']
-            
-            trial_info = f"\n🎁 Бесплатный период:\n• Осталось дней: {days_left}\n• Проверок сделано: {checks_count}"
-        else:
-            trial_info = "\n💎 Статус: Активная подписка"
-        
-        summary = f"""
-📋 РЕЗУЛЬТАТЫ:
-
-• Всего обработано: {len(valid_cookies) + len(invalid_cookies)}
-• ✅ Валидных: {len(valid_cookies)}
-• ❌ Невалидных: {len(invalid_cookies)}
-• 📊 Успех: {len(valid_cookies)/(len(valid_cookies) + len(invalid_cookies))*100:.1f}%
-{trial_info}
-        """
-        
-        keyboard = [
-            [InlineKeyboardButton("📁 Распределить по файлам", callback_data="distribute_files")],
-            [InlineKeyboardButton("📦 Скачать общий файл", callback_data="download_combined")]
-        ]
-        
-        if user_id in checker.free_trials:
-            keyboard.append([InlineKeyboardButton("💎 Купить подписку за 1 USDT", callback_data="buy_subscription")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(summary, reply_markup=reply_markup)
+        await send_check_results(update, user_id, valid_cookies, invalid_cookies, process_results)
 
     elif update.message.document:
         file = await update.message.document.get_file()
@@ -508,9 +522,38 @@ async def process_cookie_check(update: Update, user_id: int):
             os.remove(file_path)
             return
         
-        # Аналогичная логика для файлов
-        await update.message.reply_text("✅ Файл обработан!")
+        # Отправляем результаты проверки для файла
+        await send_check_results(update, user_id, valid_cookies, invalid_cookies, process_results)
         os.remove(file_path)
+
+async def send_results_files(update, user_id, valid_cookies, invalid_cookies):
+    """Отправка файлов с результатами"""
+    timestamp = datetime.now().strftime("%H%M%S")
+    
+    if valid_cookies:
+        valid_filename = f"valid_{user_id}_{timestamp}.txt"
+        with open(valid_filename, 'w', encoding='utf-8') as f:
+            for cookie in valid_cookies:
+                f.write(cookie + '\n\n')
+        
+        caption = f"✅ ВАЛИДНЫЕ КУКИ: {len(valid_cookies)} шт."
+        await update.message.reply_document(
+            document=open(valid_filename, 'rb'),
+            caption=caption
+        )
+        os.remove(valid_filename)
+    
+    if invalid_cookies:
+        invalid_filename = f"invalid_{user_id}_{timestamp}.txt"
+        with open(invalid_filename, 'w', encoding='utf-8') as f:
+            for cookie in invalid_cookies:
+                f.write(cookie + '\n\n')
+        
+        await update.message.reply_document(
+            document=open(invalid_filename, 'rb'),
+            caption=f"❌ НЕВАЛИДНЫЕ КУКИ: {len(invalid_cookies)} шт."
+        )
+        os.remove(invalid_filename)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий кнопок"""
@@ -583,23 +626,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=checker.get_command_keyboard()
         )
     
-    elif query.data in ["distribute_files", "download_combined"]:
-        if query.data == "distribute_files":
-            await query.edit_message_text("📁 Создаю отдельные файлы для каждой куки...")
-            zip_filename = checker.create_individual_files(user_id)
-            if zip_filename and os.path.exists(zip_filename):
-                with open(zip_filename, 'rb') as zip_file:
-                    await query.message.reply_document(
-                        document=zip_file,
-                        caption=f"📁 Архив с {len(checker.user_cookies[user_id]['valid_cookies'])} отдельными файлами куки"
-                    )
-                os.remove(zip_filename)
-            else:
-                await query.message.reply_text("❌ Не удалось создать файлы распределения")
-        
-        elif query.data == "download_combined":
-            # Логика скачивания общего файла
-            pass
+    elif query.data == "distribute_files":
+        await query.edit_message_text("📁 Создаю отдельные файлы для каждой куки...")
+        zip_filename = checker.create_individual_files(user_id)
+        if zip_filename and os.path.exists(zip_filename):
+            with open(zip_filename, 'rb') as zip_file:
+                await query.message.reply_document(
+                    document=zip_file,
+                    caption=f"📁 Архив с {len(checker.user_cookies[user_id]['valid_cookies'])} отдельными файлами куки"
+                )
+            os.remove(zip_filename)
+        else:
+            await query.message.reply_text("❌ Не удалось создать файлы распределения")
+    
+    elif query.data == "download_combined":
+        if user_id in checker.user_cookies:
+            valid_cookies = checker.user_cookies[user_id]['valid_cookies']
+            invalid_cookies = checker.user_cookies[user_id]['invalid_cookies']
+            await send_results_files(query, user_id, valid_cookies, invalid_cookies)
+        else:
+            await query.message.reply_text("❌ Нет данных для скачивания")
     
     elif query.data in ["cancel_trial", "back_to_trial", "subscription_details"]:
         await show_trial_window(query, context)
