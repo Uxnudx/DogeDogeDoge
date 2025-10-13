@@ -12,8 +12,8 @@ import json
 from datetime import datetime, timedelta
 
 # Конфигурация
-BOT_TOKEN = "8204086100:AAFmfYGPLqtBpSpJk1FgyCwU87l6K2ZieTo"
-CRYPTO_BOT_TOKEN = "470734:AAKKe0DuwX6a5WvXEUnsGGBrRSbyN3YJvxH"
+BOT_TOKEN = "token botika"
+CRYPTO_BOT_TOKEN = "token cryptobot => crypto pay => crypto pay api "
 CRYPTO_BOT_API_URL = "https://pay.crypt.bot/api/"
 ADMIN_USERNAME = "@pirkw"
 
